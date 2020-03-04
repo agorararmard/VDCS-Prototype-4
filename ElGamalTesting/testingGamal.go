@@ -28,6 +28,7 @@ func fromHex(hex string) *big.Int {
 }
 
 func GenerateKey(hex string) *elgamal.PrivateKey {
+
 	priv := &elgamal.PrivateKey{
 		PublicKey: elgamal.PublicKey{
 			G: fromHex(generatorHex),
@@ -46,13 +47,16 @@ func TestEncryptDecrypt() {
 	priv := GenerateKey("a4")
 	//priv1 := GenerateKey("45")
 	message := []byte("hello world")
+
 	c1, c2, err := elgamal.Encrypt(rand.Reader, &priv.PublicKey, message)
+	y := c1.Bytes()
+	x := new(big.Int).SetBytes(y)
 	if err != nil {
 		fmt.Println("error encrypting: ")
 		panic(err)
 	}
 
-	message2, err := elgamal.Decrypt(priv, c1, c2)
+	message2, err := elgamal.Decrypt(priv, x, c2)
 	//message3, err := elgamal.Decrypt(priv1, c1, c2)
 
 	if err != nil {

@@ -15,12 +15,15 @@ import (
 	"io/ioutil"
 	"log"
 	"math"
+	"math/big"
 	"math/rand"
 	"net"
 	"net/http"
 	"os"
 	"strconv"
 	"sync"
+
+	"./elgamal"
 )
 
 //Wire wire abstraction
@@ -44,7 +47,12 @@ type CircuitGate struct {
 //GarbledGate a gate in a garbled circuit
 type GarbledGate struct {
 	Gate
-	GarbledValues [][]byte `json:"GarbledValues"`
+	EncryptedMaskC1 [][]byte `json:"EncryptedMaskC1"`
+	EncryptedMaskC2 [][]byte `json:"EncryptedMaskC2"`
+	GarbledValuesC1 [][]byte `json:"GarbledValuesC1"`
+	GarbledValuesC2 [][]byte `json:"GarbledValuesC2"`
+	EncryptedMask   [][]byte `json:"EncryptedMask"`
+	GarbledValues   [][]byte `json:"GarbledValues"`
 }
 
 //ComID computation ID abstraction
@@ -63,6 +71,7 @@ type Circuit struct {
 type Randomness struct {
 	Rin       int64 `json:"Rin"`
 	Rout      int64 `json:"Rout"`
+	Rmask     int64 `json:"Rmask"`
 	Rgc       int64 `json:"Rgc"`
 	LblLength int   `json:"LblLength"`
 }
@@ -1122,6 +1131,11 @@ func YaoGarbledCkt_out(rOut int64, length int, outputSize int) [][]byte {
 	return GenNRandNumbers(2*outputSize, length, rOut, true)
 }
 
+//YaoGarbledCkt_mask mask for garbling and rerandomization
+func YaoGarbledCkt_mask(rMask int64, length int, outputSize int) [][]byte {
+	return GenNRandNumbers(2*outputSize, length, rMask, true)
+}
+
 //EncryptAES symmetric encryption using AES algorithm
 func EncryptAES(encKey []byte, plainText []byte) (ciphertext []byte, ok bool) {
 
@@ -1197,20 +1211,28 @@ func DecryptAES(encKey []byte, cipherText []byte) (plainText []byte, ok bool) {
 //Garble circuit garbling
 func Garble(circ CircuitMessage) GarbledMessage {
 
+	//Input and output size extraction... This should be improved to adobt non-2-input gates
 	inputSize := len(circ.InputGates) * 2
 	outputSize := len(circ.OutputGates)
+
+	//Generating array of input wires, output wires
 	arrIn := YaoGarbledCkt_in(circ.Rin, circ.LblLength, inputSize)
 	arrOut := YaoGarbledCkt_out(circ.Rout, circ.LblLength, outputSize)
+	//arrMask := YaoGarbledCkt_mask(circ.Rmask, circ.LblLength, outputSize)
 
+	//Maps to keep track of wires in and out of gates throughout the topological traversal of the circuit
 	inWires := make(map[string][]Wire)
 	outWires := make(map[string][]Wire)
 
+	//The randomization seed is now Rgc
 	rand.Seed(circ.Rgc)
 
+	//Preparing containers for garbled circuit and input/output wires
 	var gc GarbledCircuit
 	inputWiresGC := []Wire{}
 	outputWiresGC := []Wire{}
 
+	//Setting computation ID
 	gc.CID = circ.CID
 
 	// Input Gates Garbling
@@ -1229,7 +1251,7 @@ func Garble(circ CircuitMessage) GarbledMessage {
 		//fmt.Printf("%v, %T\n", val.GateID, val.GateID)
 
 		inWires[string(val.GateID)] = []Wire{}
-
+		//Fetching input wire values from the arrIn array
 		for i := 0; i < inCnt; i++ {
 			inWires[string(val.GateID)] = append(inWires[string(val.GateID)], Wire{
 				WireLabel: arrIn[wInCnt],
@@ -1243,6 +1265,7 @@ func Garble(circ CircuitMessage) GarbledMessage {
 			})
 			wInCnt += 2
 		}
+		//Generating output wire labels and dumbing them into the big outWires container
 		outWires[string(val.GateID)] = []Wire{}
 		outWire := GenNRandNumbers(2, circ.LblLength, 0, false)
 		outWires[string(val.GateID)] = append(outWires[string(val.GateID)], Wire{
@@ -1255,14 +1278,63 @@ func Garble(circ CircuitMessage) GarbledMessage {
 		//out:	1	0	0	1
 
 		//fmt.Println("Here we getting inWires: \n")
+
+		//Preparing containers for the garbled values, the Cs used in elgamal encryption, and the mask
 		gc.InputGates[k].GarbledValues = make([][]byte, len(val.TruthTable))
+		gc.InputGates[k].GarbledValuesC1 = make([][]byte, len(val.TruthTable))
+		gc.InputGates[k].GarbledValuesC2 = make([][]byte, len(val.TruthTable))
+		gc.InputGates[k].EncryptedMask = make([][]byte, len(val.TruthTable))
+		gc.InputGates[k].EncryptedMaskC1 = make([][]byte, len(val.TruthTable))
+		gc.InputGates[k].EncryptedMaskC2 = make([][]byte, len(val.TruthTable))
+
 		for key, value := range val.TruthTable {
 			var concat []byte
-			for i := 0; i < inCnt; i++ {
+			var finalInput []byte
+			//This loop basically: treats the index in the truth table as the carrier of the input values.
+			//i.e: index 1 for a 3 input gate will carry 001 which means the first input is 1, while the rest is 0
+			//The loop extracts the value of the wire from the index and fetches the corresponding wire label from the container descriped above
+			//The concatenation of the n-1 input wires is used to encrypt the mask
+			for i := 0; i < inCnt-1; /*You just added this -1*/ i++ {
 				idx := ((key >> i) & (1))
 				concat = append(concat, inWires[string(val.GateID)][(i*2)+idx].WireLabel...)
 			}
 			concat = append(concat, []byte(val.GateID)...)
+
+			//The final input wire is used to encrypt the mask
+			finalInput = inWires[string(val.GateID)][((inCnt-1)*2)+((key>>inCnt-1)&(1))].WireLabel
+
+			//ElGamal Encryption Process:
+			//Generate the mask
+			mask := GenNRandNumbers(1, circ.LblLength, 0, false)
+
+			//Generate Keys:
+			privMask := GenerateElGamalKey(string(concat))
+			privOutput := GenerateElGamalKey(string(finalInput))
+
+			//fetch output label
+			var idxOut int
+			if value {
+				idxOut = 1
+			}
+			outKey := outWires[string(val.GateID)][int(idxOut)]
+
+			maskC1, maskC2, err := elgamal.Encrypt(cryptoRand.Reader, &privMask.PublicKey, mask[0])
+			gc.InputGates[k].EncryptedMaskC1[key] = maskC1.Bytes()
+			gc.InputGates[k].EncryptedMaskC2[key] = maskC2.Bytes()
+			tmpSlice := byteSliceXOR(mask[0], outKey.WireLabel)
+
+			if err != nil {
+				panic("Mask encryption Error")
+			}
+
+			outC1, outC2, err := elgamal.Encrypt(cryptoRand.Reader, &privOutput.PublicKey, tmpSlice)
+			gc.InputGates[k].GarbledValuesC1[key] = outC1.Bytes()
+			gc.InputGates[k].GarbledValuesC2[key] = outC2.Bytes()
+
+			if err != nil {
+				panic("Out Label encryption Error")
+			}
+			/*AES leftovers CLEAN later
 			hash := sha256.Sum256(concat)
 
 			var idxOut int
@@ -1279,8 +1351,9 @@ func Garble(circ CircuitMessage) GarbledMessage {
 			gc.InputGates[k].GarbledValues[key], ok = EncryptAES(encKey, outKey.WireLabel)
 			if !ok {
 				fmt.Println("Encryption Failed")
-			}
+			}*/
 		}
+
 		//fmt.Println("\nwe got'em inWires \n")
 
 	}
@@ -1697,4 +1770,41 @@ func GetPartyInfo() (PartyInfo, []byte) {
 //ReRand does nothing for now
 func ReRand(gcm GarbledMessage, r Randomness) GarbledMessage {
 	return gcm
+}
+
+func fromHex(hex string) *big.Int {
+	n, ok := new(big.Int).SetString(hex, 16)
+	if !ok {
+		panic("failed to parse hex number")
+	}
+	return n
+}
+
+// This is the 1024-bit MODP group from RFC 5114, section 2.1:
+const primeHex = "B10B8F96A080E01DDE92DE5EAE5D54EC52C99FBCFB06A3C69A6A9DCA52D23B616073E28675A23D189838EF1E2EE652C013ECB4AEA906112324975C3CD49B83BFACCBDD7D90C4BD7098488E9C219A73724EFFD6FAE5644738FAA31A4FF55BCCC0A151AF5F0DC8B4BD45BF37DF365C1A65E68CFDA76D4DA708DF1FB2BC2E4A4371"
+
+const generatorHex = "A4D1CBD5C3FD34126765A442EFB99905F8104DD258AC507FD6406CFF14266D31266FEA1E5C41564B777E690F5504F213160217B4B01B886A5E91547F9E2749F4D7FBD7D3B9A92EE1909D0D2263F80A76A6A24C087A091F531DBF0A0169B6A28AD662A4D18E73AFA32D779D5918D08BC8858F4DCEF97C2A24855E6EEB22B3B2E5"
+
+//GenerateElGamalKey takes a hexadecimal number and generates a private key
+func GenerateElGamalKey(hex string) *elgamal.PrivateKey {
+
+	priv := &elgamal.PrivateKey{
+		PublicKey: elgamal.PublicKey{
+			G: fromHex(generatorHex),
+			P: fromHex(primeHex),
+		},
+		X: fromHex(hex),
+	}
+
+	priv.Y = new(big.Int).Exp(priv.G, priv.X, priv.P)
+
+	return priv
+}
+
+func byteSliceXOR(A []byte, B []byte) (C []byte) {
+	C = []byte{}
+	for key, val := range A {
+		C = append(C, val^B[key])
+	}
+	return
 }
