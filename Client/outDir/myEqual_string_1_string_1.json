@@ -1,0 +1,77 @@
+{
+    
+    "InputGates":[
+        {
+            "GateID":"0",
+            "GateInputs": [],                
+            "TruthTable":[true,false,false,true]
+        },
+        {
+            "GateID":"1",
+            "GateInputs": [],                
+            "TruthTable":[true,false,false,true]
+        },
+        {
+            "GateID":"2",
+            "GateInputs": [],                
+            "TruthTable":[true,false,false,true]
+        },{
+            "GateID":"3",
+            "GateInputs": [],                
+            "TruthTable":[true,false,false,true]
+        },            {
+            "GateID":"4",
+            "GateInputs": [],                
+            "TruthTable":[true,false,false,true]
+        },            {
+            "GateID":"5",
+            "GateInputs": [],                
+            "TruthTable":[true,false,false,true]
+        },            {
+            "GateID":"6",
+            "GateInputs": [],                
+            "TruthTable":[true,false,false,true]
+        },            {
+            "GateID":"7",
+            "GateInputs": [],                
+            "TruthTable":[true,false,false,true]
+        }
+    ],
+    "MiddleGates":[{
+        "GateID":"8",
+        "GateInputs": ["0","1"],                
+        "TruthTable":[false,false,false,true]
+        },{
+        "GateID":"9",
+        "GateInputs": ["2","3"],                
+        "TruthTable":[false,false,false,true]
+        },
+        {
+        "GateID":"10",
+        "GateInputs": ["4","5"],                
+        "TruthTable":[false,false,false,true]
+        },{
+        "GateID":"11",
+        "GateInputs": ["6","7"],                
+        "TruthTable":[false,false,false,true]
+        },{
+        "GateID":"12",
+        "GateInputs": ["8","9"],                
+        "TruthTable":[false,false,false,true]
+        },{
+        "GateID":"13",
+        "GateInputs": ["10","11"],                
+        "TruthTable":[false,false,false,true]
+        }
+    ],
+    "OutputGates":[
+        {
+            "GateID":"14",
+            "GateInputs": ["12","13"],                
+            "TruthTable":[false,false,false,true]
+        }
+    ]
+}
+
+
+
