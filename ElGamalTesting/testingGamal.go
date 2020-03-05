@@ -7,8 +7,11 @@ package main
 import (
 	"bytes"
 	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"math/big"
+	MATRAND "math/rand"
+	"os"
 
 	"./elgamal"
 	//"golang.org/x/crypto/openpgp/elgamal"
@@ -27,14 +30,14 @@ func fromHex(hex string) *big.Int {
 	return n
 }
 
-func GenerateKey(hex string) *elgamal.PrivateKey {
+func GenerateKey(hexS []byte) *elgamal.PrivateKey {
 
 	priv := &elgamal.PrivateKey{
 		PublicKey: elgamal.PublicKey{
 			G: fromHex(generatorHex),
 			P: fromHex(primeHex),
 		},
-		X: fromHex(hex),
+		X: fromHex(hex.EncodeToString(hexS)),
 	}
 
 	priv.Y = new(big.Int).Exp(priv.G, priv.X, priv.P)
@@ -44,7 +47,7 @@ func GenerateKey(hex string) *elgamal.PrivateKey {
 
 func TestEncryptDecrypt() {
 
-	priv := GenerateKey("a4")
+	priv := GenerateKey([]byte("a4"))
 	//priv1 := GenerateKey("45")
 	message := []byte("hello world")
 
@@ -86,7 +89,100 @@ func TestDecryptBadKey() {
 	}
 }
 
+//YaoGarbledCkt_in input wire garbling
+func YaoGarbledCkt_in(rIn int64, length int, inputSize int) [][]byte {
+	return GenNRandNumbers(2*inputSize, length, rIn, true)
+}
+
+//YaoGarbledCkt_out output wire garbling
+func YaoGarbledCkt_out(rOut int64, length int, outputSize int) [][]byte {
+	// only one output bit for now
+	return GenNRandNumbers(2*outputSize, length, rOut, true)
+}
+
+//GenNRandNumbers generating random byte arrays
+func GenNRandNumbers(n int, length int, r int64, considerR bool) [][]byte {
+	if considerR {
+		MATRAND.Seed(r)
+	}
+	seeds := make([][]byte, n)
+	for i := 0; i < n; i++ {
+		seeds[i] = make([]byte, length)
+		_, err := MATRAND.Read(seeds[i])
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(-1)
+		}
+	}
+	return seeds
+}
+
+func byteSliceXOR(A []byte, B []byte) (C []byte) {
+	C = []byte{}
+	for key, val := range A {
+		C = append(C, val^B[key])
+	}
+	return
+}
+
+func parseByteToHex(arr []byte) (hexS string) {
+	/*hexS = ""
+	for _, val := range arr {
+
+		hex += strconv.Itoa((int(val)))
+	}*/
+	hexS = hex.EncodeToString(arr)
+	return
+}
+
 func main() {
-	TestEncryptDecrypt()
-	TestDecryptBadKey()
+	//TestEncryptDecrypt()
+	//TestDecryptBadKey()
+
+	arrIn := YaoGarbledCkt_in(MATRAND.Int63(), 16, 2)
+	arrOut := YaoGarbledCkt_out(MATRAND.Int63(), 16, 1)
+
+	MATRAND.Seed(MATRAND.Int63())
+	fmt.Println(arrIn[0])
+	fmt.Println((arrIn[1]))
+
+	fmt.Println(parseByteToHex(arrIn[1]))
+	fmt.Println("///////")
+	fmt.Println(arrOut[0])
+
+	//Generate the mask
+	mask := GenNRandNumbers(1, 16, 0, false)
+
+	fmt.Println(string(mask[0]))
+	//Generate Keys:
+	privMask := GenerateKey(arrIn[0])
+	privOutput := GenerateKey(arrIn[1])
+
+	maskC1, maskC2, err := elgamal.Encrypt(rand.Reader, &privMask.PublicKey, mask[0])
+	tmpSlice := byteSliceXOR(mask[0], arrOut[0])
+	if err != nil {
+		panic("Mask encryption Error in Input Gates")
+	}
+	outC1, outC2, err := elgamal.Encrypt(rand.Reader, &privOutput.PublicKey, tmpSlice)
+	if err != nil {
+		panic("Label encryption Error in Input Gates")
+	}
+
+	outMask, err := elgamal.Decrypt(privMask, maskC1, maskC2)
+	if err != nil {
+		panic("Mask decryption Error in Input Gates")
+	}
+
+	outLabelMasked, err := elgamal.Decrypt(privOutput, outC1, outC2)
+	if err != nil {
+		panic("Label decryption Error in Input Gates")
+	}
+
+	trueOutLabel := byteSliceXOR(outMask, outLabelMasked)
+
+	fmt.Println(trueOutLabel)
+
+	if bytes.Compare(trueOutLabel, arrOut[0]) == 0 {
+		fmt.Println("Success")
+	}
 }
