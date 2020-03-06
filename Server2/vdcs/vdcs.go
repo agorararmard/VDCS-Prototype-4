@@ -9,18 +9,22 @@ import (
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"io/ioutil"
 	"log"
 	"math"
+	"math/big"
 	"math/rand"
 	"net"
 	"net/http"
 	"os"
 	"strconv"
 	"sync"
+
+	"./elgamal"
 )
 
 //Wire wire abstraction
@@ -44,7 +48,12 @@ type CircuitGate struct {
 //GarbledGate a gate in a garbled circuit
 type GarbledGate struct {
 	Gate
-	GarbledValues [][]byte `json:"GarbledValues"`
+	EncryptedMaskC1 [][]byte `json:"EncryptedMaskC1"`
+	EncryptedMaskC2 [][]byte `json:"EncryptedMaskC2"`
+	GarbledValuesC1 [][]byte `json:"GarbledValuesC1"`
+	GarbledValuesC2 [][]byte `json:"GarbledValuesC2"`
+	EncryptedMask   [][]byte `json:"EncryptedMask"`
+	GarbledValues   [][]byte `json:"GarbledValues"`
 }
 
 //ComID computation ID abstraction
@@ -63,6 +72,7 @@ type Circuit struct {
 type Randomness struct {
 	Rin       int64 `json:"Rin"`
 	Rout      int64 `json:"Rout"`
+	Rmask     int64 `json:"Rmask"`
 	Rgc       int64 `json:"Rgc"`
 	LblLength int   `json:"LblLength"`
 }
@@ -1122,6 +1132,11 @@ func YaoGarbledCkt_out(rOut int64, length int, outputSize int) [][]byte {
 	return GenNRandNumbers(2*outputSize, length, rOut, true)
 }
 
+//YaoGarbledCkt_mask mask for garbling and rerandomization
+func YaoGarbledCkt_mask(rMask int64, length int, outputSize int) [][]byte {
+	return GenNRandNumbers(2*outputSize, length, rMask, true)
+}
+
 //EncryptAES symmetric encryption using AES algorithm
 func EncryptAES(encKey []byte, plainText []byte) (ciphertext []byte, ok bool) {
 
@@ -1197,20 +1212,28 @@ func DecryptAES(encKey []byte, cipherText []byte) (plainText []byte, ok bool) {
 //Garble circuit garbling
 func Garble(circ CircuitMessage) GarbledMessage {
 
+	//Input and output size extraction... This should be improved to adobt non-2-input gates
 	inputSize := len(circ.InputGates) * 2
 	outputSize := len(circ.OutputGates)
+
+	//Generating array of input wires, output wires
 	arrIn := YaoGarbledCkt_in(circ.Rin, circ.LblLength, inputSize)
 	arrOut := YaoGarbledCkt_out(circ.Rout, circ.LblLength, outputSize)
+	//arrMask := YaoGarbledCkt_mask(circ.Rmask, circ.LblLength, outputSize)
 
+	//Maps to keep track of wires in and out of gates throughout the topological traversal of the circuit
 	inWires := make(map[string][]Wire)
 	outWires := make(map[string][]Wire)
 
+	//The randomization seed is now Rgc
 	rand.Seed(circ.Rgc)
 
+	//Preparing containers for garbled circuit and input/output wires
 	var gc GarbledCircuit
 	inputWiresGC := []Wire{}
 	outputWiresGC := []Wire{}
 
+	//Setting computation ID
 	gc.CID = circ.CID
 
 	// Input Gates Garbling
@@ -1229,7 +1252,7 @@ func Garble(circ CircuitMessage) GarbledMessage {
 		//fmt.Printf("%v, %T\n", val.GateID, val.GateID)
 
 		inWires[string(val.GateID)] = []Wire{}
-
+		//Fetching input wire values from the arrIn array
 		for i := 0; i < inCnt; i++ {
 			inWires[string(val.GateID)] = append(inWires[string(val.GateID)], Wire{
 				WireLabel: arrIn[wInCnt],
@@ -1243,6 +1266,7 @@ func Garble(circ CircuitMessage) GarbledMessage {
 			})
 			wInCnt += 2
 		}
+		//Generating output wire labels and dumbing them into the big outWires container
 		outWires[string(val.GateID)] = []Wire{}
 		outWire := GenNRandNumbers(2, circ.LblLength, 0, false)
 		outWires[string(val.GateID)] = append(outWires[string(val.GateID)], Wire{
@@ -1255,14 +1279,64 @@ func Garble(circ CircuitMessage) GarbledMessage {
 		//out:	1	0	0	1
 
 		//fmt.Println("Here we getting inWires: \n")
-		gc.InputGates[k].GarbledValues = make([][]byte, len(val.TruthTable))
+
+		//Preparing containers for the garbled values, the Cs used in elgamal encryption, and the mask
+		lengthVal := len(val.TruthTable)
+		gc.InputGates[k].GarbledValues = make([][]byte, lengthVal)
+		gc.InputGates[k].GarbledValuesC1 = make([][]byte, lengthVal)
+		gc.InputGates[k].GarbledValuesC2 = make([][]byte, lengthVal)
+		gc.InputGates[k].EncryptedMask = make([][]byte, lengthVal)
+		gc.InputGates[k].EncryptedMaskC1 = make([][]byte, lengthVal)
+		gc.InputGates[k].EncryptedMaskC2 = make([][]byte, lengthVal)
+
 		for key, value := range val.TruthTable {
 			var concat []byte
-			for i := 0; i < inCnt; i++ {
+			var finalInput []byte
+			//This loop basically: treats the index in the truth table as the carrier of the input values.
+			//i.e: index 1 for a 3 input gate will carry 001 which means the first input is 1, while the rest is 0
+			//The loop extracts the value of the wire from the index and fetches the corresponding wire label from the container descriped above
+			//The concatenation of the n-1 input wires is used to encrypt the mask
+			for i := 0; i < inCnt-1; /*You just added this -1*/ i++ {
 				idx := ((key >> i) & (1))
 				concat = append(concat, inWires[string(val.GateID)][(i*2)+idx].WireLabel...)
 			}
 			concat = append(concat, []byte(val.GateID)...)
+
+			//The final input wire is used to encrypt the mask
+			finalInput = inWires[string(val.GateID)][((inCnt-1)*2)+((key>>(inCnt-1))&(1))].WireLabel
+
+			//ElGamal Encryption Process:
+			//Generate the mask
+			mask := GenNRandNumbers(1, circ.LblLength, 0, false)
+
+			//Generate Keys:
+			privMask := GenerateElGamalKey(concat)
+			privOutput := GenerateElGamalKey(finalInput)
+
+			//fetch output label
+			var idxOut int
+			if value {
+				idxOut = 1
+			}
+			outKey := outWires[string(val.GateID)][int(idxOut)]
+
+			maskC1, maskC2, err := elgamal.Encrypt(cryptoRand.Reader, &privMask.PublicKey, mask[0])
+			gc.InputGates[k].EncryptedMaskC1[key] = maskC1.Bytes()
+			gc.InputGates[k].EncryptedMaskC2[key] = maskC2.Bytes()
+			tmpSlice := byteSliceXOR(mask[0], outKey.WireLabel)
+
+			if err != nil {
+				panic("Mask encryption Error in Input Gates")
+			}
+
+			outC1, outC2, err := elgamal.Encrypt(cryptoRand.Reader, &privOutput.PublicKey, tmpSlice)
+			gc.InputGates[k].GarbledValuesC1[key] = outC1.Bytes()
+			gc.InputGates[k].GarbledValuesC2[key] = outC2.Bytes()
+
+			if err != nil {
+				panic("Out Label encryption Error in Input Gates")
+			}
+			/*AES leftovers CLEAN later
 			hash := sha256.Sum256(concat)
 
 			var idxOut int
@@ -1279,32 +1353,42 @@ func Garble(circ CircuitMessage) GarbledMessage {
 			gc.InputGates[k].GarbledValues[key], ok = EncryptAES(encKey, outKey.WireLabel)
 			if !ok {
 				fmt.Println("Encryption Failed")
-			}
+			}*/
 		}
+
 		//fmt.Println("\nwe got'em inWires \n")
 
 	}
 
 	//Middle Gates Garbling
 	for k, val := range circ.MiddleGates {
+
+		//Adding the gate container
 		gc.MiddleGates = append(gc.MiddleGates, GarbledGate{
 			Gate: Gate{
 				GateID: val.GateID,
 			},
 		})
 
+		//Setting gate inputs
 		gc.MiddleGates[k].GateInputs = val.GateInputs
 
+		//Calculating the input wires count
 		inCnt := int(math.Log2(float64(len(val.TruthTable))))
 
 		//fmt.Printf("%v, %T\n", val.GateID, val.GateID)
+
+		//Creating a place holder for the wires in the map
 		inWires[string(val.GateID)] = []Wire{}
 
+		//Extracting the input wire labels from the map
 		for _, j := range val.GateInputs {
 			inWires[string(val.GateID)] = append(inWires[string(val.GateID)], outWires[string(j)][0])
 			inWires[string(val.GateID)] = append(inWires[string(val.GateID)], outWires[string(j)][1])
 			//wInCnt++
 		}
+
+		//Generating the output wire labels and storing them into the map
 		outWires[string(val.GateID)] = []Wire{}
 		outWire := GenNRandNumbers(2, circ.LblLength, 0, false)
 		outWires[string(val.GateID)] = append(outWires[string(val.GateID)], Wire{
@@ -1313,55 +1397,114 @@ func Garble(circ CircuitMessage) GarbledMessage {
 			WireLabel: outWire[1],
 		})
 
-		gc.MiddleGates[k].GarbledValues = make([][]byte, len(val.TruthTable))
+		//gc.MiddleGates[k].GarbledValues = make([][]byte, len(val.TruthTable))
+
+		//Preparing containers for the garbled values, the Cs used in elgamal encryption, and the mask
+		lengthVal := len(val.TruthTable)
+		gc.MiddleGates[k].GarbledValues = make([][]byte, lengthVal)
+		gc.MiddleGates[k].GarbledValuesC1 = make([][]byte, lengthVal)
+		gc.MiddleGates[k].GarbledValuesC2 = make([][]byte, lengthVal)
+		gc.MiddleGates[k].EncryptedMask = make([][]byte, lengthVal)
+		gc.MiddleGates[k].EncryptedMaskC1 = make([][]byte, lengthVal)
+		gc.MiddleGates[k].EncryptedMaskC2 = make([][]byte, lengthVal)
+
 		for key, value := range val.TruthTable {
 			//Concatinating the wire labels with the GateID
 			var concat []byte
-			for i := 0; i < inCnt; i++ {
+			var finalInput []byte
+			//This loop basically: treats the index in the truth table as the carrier of the input values.
+			//i.e: index 1 for a 3 input gate will carry 001 which means the first input is 1, while the rest is 0
+			//The loop extracts the value of the wire from the index and fetches the corresponding wire label from the container descriped above
+			//The concatenation of the n-1 input wires is used to encrypt the mask
+			for i := 0; i < inCnt-1; /*You just added this -1*/ i++ {
 				idx := ((key >> i) & (1))
 				concat = append(concat, inWires[string(val.GateID)][(i*2)+idx].WireLabel...)
 			}
 			concat = append(concat, []byte(val.GateID)...)
 
-			//Hashing the value
-			hash := sha256.Sum256(concat)
+			//The final input wire is used to encrypt the mask
+			finalInput = inWires[string(val.GateID)][((inCnt-1)*2)+((key>>(inCnt-1))&(1))].WireLabel
 
-			//Determining the value of the output wire
-			var idxOut int
+			//ElGamal Encryption Process:
+			//Generate the mask
+			mask := GenNRandNumbers(1, circ.LblLength, 0, false)
+
+			//Generate Keys:
+			privMask := GenerateElGamalKey(concat)
+			privOutput := GenerateElGamalKey(finalInput)
+
+			//fetch output label
+			var idxOut int = 0
 			if value {
 				idxOut = 1
 			}
 			outKey := outWires[string(val.GateID)][int(idxOut)]
 
-			// generate a new aes cipher using our 32 byte long key
-			encKey := make([]byte, 32)
-			for jk, tmpo := range hash {
-				encKey[jk] = tmpo
+			maskC1, maskC2, err := elgamal.Encrypt(cryptoRand.Reader, &privMask.PublicKey, mask[0])
+			gc.MiddleGates[k].EncryptedMaskC1[key] = maskC1.Bytes()
+			gc.MiddleGates[k].EncryptedMaskC2[key] = maskC2.Bytes()
+			tmpSlice := byteSliceXOR(mask[0], outKey.WireLabel)
+
+			if err != nil {
+				panic("Mask encryption Error in Middle Gates")
 			}
-			var ok bool
-			gc.MiddleGates[k].GarbledValues[key], ok = EncryptAES(encKey, outKey.WireLabel)
-			if !ok {
-				fmt.Println("Encryption Failed")
+
+			outC1, outC2, err := elgamal.Encrypt(cryptoRand.Reader, &privOutput.PublicKey, tmpSlice)
+			gc.MiddleGates[k].GarbledValuesC1[key] = outC1.Bytes()
+			gc.MiddleGates[k].GarbledValuesC2[key] = outC2.Bytes()
+
+			if err != nil {
+				panic("Out Label encryption Error in Middle Gates")
 			}
+
+			// AES leftoevers CLEAN later
+			/*
+				//Hashing the value
+				hash := sha256.Sum256(concat)
+
+				//Determining the value of the output wire
+				var idxOut int
+				if value {
+					idxOut = 1
+				}
+				outKey := outWires[string(val.GateID)][int(idxOut)]
+
+				// generate a new aes cipher using our 32 byte long key
+				encKey := make([]byte, 32)
+				for jk, tmpo := range hash {
+					encKey[jk] = tmpo
+				}
+				var ok bool
+				gc.MiddleGates[k].GarbledValues[key], ok = EncryptAES(encKey, outKey.WireLabel)
+				if !ok {
+					fmt.Println("Encryption Failed")
+				}
+			*/
 		}
 
 	}
 
 	//Output Gates Garbling
+
+	//A count for the output wires
 	wOutCnt := 0
 	for k, val := range circ.OutputGates {
+		//container initialization
 		gc.OutputGates = append(gc.OutputGates, GarbledGate{
 			Gate: Gate{
 				GateID: val.GateID,
 			},
 		})
 
+		//Setting the gate inputs
 		gc.OutputGates[k].GateInputs = val.GateInputs
 
+		//Calculating the number of input entries
 		inCnt := int(math.Log2(float64(len(val.TruthTable))))
 
 		//fmt.Printf("%v, %T\n", val.GateID, val.GateID)
 
+		//Fetching the input wire labels from the map
 		inWires[string(val.GateID)] = []Wire{}
 		for _, j := range val.GateInputs {
 			inWires[string(val.GateID)] = append(inWires[string(val.GateID)], outWires[string(j)][0])
@@ -1370,14 +1513,15 @@ func Garble(circ CircuitMessage) GarbledMessage {
 			//wInCnt++
 		}
 
+		//Adding the output wire labels to the map
 		outWires[string(val.GateID)] = []Wire{}
-
 		outWires[string(val.GateID)] = append(outWires[string(val.GateID)], Wire{
 			WireLabel: arrOut[wOutCnt],
 		}, Wire{
 			WireLabel: arrOut[wOutCnt+1],
 		})
 
+		//Storing the output wire labels independently
 		outputWiresGC = append(outputWiresGC, Wire{
 			WireLabel: arrOut[wOutCnt],
 		}, Wire{
@@ -1385,31 +1529,82 @@ func Garble(circ CircuitMessage) GarbledMessage {
 		})
 		wOutCnt += 2
 
-		gc.OutputGates[k].GarbledValues = make([][]byte, len(val.TruthTable))
+		//Preparing containers for the garbled values, the Cs used in elgamal encryption, and the mask
+		lengthVal := len(val.TruthTable)
+		gc.OutputGates[k].GarbledValues = make([][]byte, lengthVal)
+		gc.OutputGates[k].GarbledValuesC1 = make([][]byte, lengthVal)
+		gc.OutputGates[k].GarbledValuesC2 = make([][]byte, lengthVal)
+		gc.OutputGates[k].EncryptedMask = make([][]byte, lengthVal)
+		gc.OutputGates[k].EncryptedMaskC1 = make([][]byte, lengthVal)
+		gc.OutputGates[k].EncryptedMaskC2 = make([][]byte, lengthVal)
+
 		for key, value := range val.TruthTable {
+			//Concatinating the wire labels with the GateID
 			var concat []byte
-			for i := 0; i < inCnt; i++ {
+			var finalInput []byte
+			//This loop basically: treats the index in the truth table as the carrier of the input values.
+			//i.e: index 1 for a 3 input gate will carry 001 which means the first input is 1, while the rest is 0
+			//The loop extracts the value of the wire from the index and fetches the corresponding wire label from the container descriped above
+			//The concatenation of the n-1 input wires is used to encrypt the mask
+			for i := 0; i < inCnt-1; /*You just added this -1*/ i++ {
 				idx := ((key >> i) & (1))
 				concat = append(concat, inWires[string(val.GateID)][(i*2)+idx].WireLabel...)
 			}
+			//Adding the gate ID
 			concat = append(concat, []byte(val.GateID)...)
-			hash := sha256.Sum256(concat)
 
-			var idxOut int
+			//The final input wire is used to encrypt the mask
+			finalInput = inWires[string(val.GateID)][((inCnt-1)*2)+((key>>(inCnt-1))&(1))].WireLabel
+
+			//ElGamal Encryption Process:
+			//Generate the mask
+			mask := GenNRandNumbers(1, circ.LblLength, 0, false)
+
+			//Generate Keys:
+			privMask := GenerateElGamalKey(concat)
+			privOutput := GenerateElGamalKey(finalInput)
+
+			//fetch output label
+			var idxOut int = 0
 			if value {
 				idxOut = 1
 			}
 			outKey := outWires[string(val.GateID)][int(idxOut)]
-			// generate a new aes cipher using our 32 byte long key
-			encKey := make([]byte, 32)
-			for jk, tmpo := range hash {
-				encKey[jk] = tmpo
+
+			maskC1, maskC2, err := elgamal.Encrypt(cryptoRand.Reader, &privMask.PublicKey, mask[0])
+			gc.OutputGates[k].EncryptedMaskC1[key] = maskC1.Bytes()
+			gc.OutputGates[k].EncryptedMaskC2[key] = maskC2.Bytes()
+			tmpSlice := byteSliceXOR(mask[0], outKey.WireLabel)
+
+			if err != nil {
+				panic("Mask encryption Error in Output Gates")
 			}
-			var ok bool
-			gc.OutputGates[k].GarbledValues[key], ok = EncryptAES(encKey, outKey.WireLabel)
-			if !ok {
-				fmt.Println("Encryption Failed")
+
+			outC1, outC2, err := elgamal.Encrypt(cryptoRand.Reader, &privOutput.PublicKey, tmpSlice)
+			gc.OutputGates[k].GarbledValuesC1[key] = outC1.Bytes()
+			gc.OutputGates[k].GarbledValuesC2[key] = outC2.Bytes()
+
+			if err != nil {
+				panic("Out Label encryption Error in Output Gates")
 			}
+			/*
+				hash := sha256.Sum256(concat)
+
+				var idxOut int
+				if value {
+					idxOut = 1
+				}
+				outKey := outWires[string(val.GateID)][int(idxOut)]
+				// generate a new aes cipher using our 32 byte long key
+				encKey := make([]byte, 32)
+				for jk, tmpo := range hash {
+					encKey[jk] = tmpo
+				}
+				var ok bool
+				gc.OutputGates[k].GarbledValues[key], ok = EncryptAES(encKey, outKey.WireLabel)
+				if !ok {
+					fmt.Println("Encryption Failed")
+				}*/
 		}
 
 	}
@@ -1429,66 +1624,166 @@ func Garble(circ CircuitMessage) GarbledMessage {
 
 //Evaluate evaluate a garbled circuit
 func Evaluate(gc GarbledMessage) (result ResEval) {
-
+	//Setting computation ID
 	result.CID = gc.CID
+	//A map for storing the output wires for the ease of topological traversal
 	outWires := make(map[string]Wire)
 	var wInCnt int
 
+	//Traversing Input Gates
 	for _, val := range gc.InputGates {
 
+		//Calculating the number of input entries
 		inCnt := int(math.Log2(float64(len(val.GarbledValues))))
+
+		//The concatenation of the n-1 input wires is used to encrypt the mask
 		var concat []byte
-		for i := 0; i < inCnt; i++ {
+		var finalInput []byte
+
+		for i := 0; i < inCnt-1; /*You just added this -1*/ i++ {
 			concat = append(concat, gc.InputWires[wInCnt].WireLabel...)
 			wInCnt++
 		}
+		//concatenating with the gate ID
 		concat = append(concat, []byte(val.GateID)...)
-		hash := sha256.Sum256(concat)
+
+		//fetching the final input
+		finalInput = gc.InputWires[wInCnt].WireLabel
+		wInCnt++
+
+		//Generate Keys:
+		privMask := GenerateElGamalKey(concat)
+		privOutput := GenerateElGamalKey(finalInput)
+
+		//AES leftovers CLEAN later
+		/*hash := sha256.Sum256(concat)
 		encKey := make([]byte, 32)
 		for jk, tmpo := range hash {
 			encKey[jk] = tmpo
-		}
+		}*/
+
+		//A place holder for the output wires
 		outWires[string(val.GateID)] = Wire{}
-		for _, gValue := range val.GarbledValues {
-			tmpWireLabel, ok := DecryptAES(encKey, gValue)
+
+		//Loop over entries
+		for garbledKey := range val.GarbledValuesC1 {
+
+			//Decrypt the mask
+			outMask, err := elgamal.Decrypt(privMask, new(big.Int).SetBytes(val.EncryptedMaskC1[garbledKey]), new(big.Int).SetBytes(val.EncryptedMaskC2[garbledKey]))
+
+			//if decrypted
+			if err == nil {
+
+				//Decrypt the masked output label
+				outLabelMasked, err := elgamal.Decrypt(privOutput, new(big.Int).SetBytes(val.GarbledValuesC1[garbledKey]), new(big.Int).SetBytes(val.GarbledValuesC2[garbledKey]))
+
+				//if decrypted
+				if err == nil {
+					//XOR the label and the mask to unmask it
+					tmpWireLabel := byteSliceXOR(outMask, outLabelMasked)
+
+					//Add the wire label to the map to continue the traversal
+					outWires[string(val.GateID)] = Wire{
+						WireLabel: tmpWireLabel,
+					}
+					//break out of looping over entries since you already found the output of the gate
+					break
+				}
+
+			}
+			//AES leftovers CLEAN later
+			/*tmpWireLabel, ok := DecryptAES(encKey, gValue)
 			if ok {
 				outWires[string(val.GateID)] = Wire{
 					WireLabel: tmpWireLabel,
 				}
 				break
-			}
+			}*/
 		}
 
+		//if no output label was found, then the evaluation failed
 		if (bytes.Compare(outWires[string(val.GateID)].WireLabel, Wire{}.WireLabel)) == 0 {
 			fmt.Println("Fail Evaluation Input Gate")
 		} /*else {
 			fmt.Println("\n\nYaaay\nGate ", val.GateID, " Now has an output wire: \n", outWires[val.GateID].WireLabel, "\n\n")
 		}*/
 	}
+
+	//Traversing middle gates
 	for _, val := range gc.MiddleGates {
 
 		//inCnt := len(val.GateInputs)
 		var concat []byte
-		for _, preGate := range val.GateInputs {
-			concat = append(concat, outWires[string(preGate)].WireLabel...)
+		var finalInput []byte
+		for kGate, preGate := range val.GateInputs {
+			if kGate == len(val.GateInputs)-1 {
+				//The final input label
+				finalInput = outWires[string(preGate)].WireLabel
+			} else {
+				//The concatentation of all previous labels
+				concat = append(concat, outWires[string(preGate)].WireLabel...)
+			}
 			//wInCnt++
 		}
+		//concatenating the gate ID
 		concat = append(concat, []byte(val.GateID)...)
-		hash := sha256.Sum256(concat)
-		encKey := make([]byte, 32)
-		for jk, tmpo := range hash {
-			encKey[jk] = tmpo
-		}
+
+		//Generate Keys:
+		privMask := GenerateElGamalKey(concat)
+		privOutput := GenerateElGamalKey(finalInput)
+
+		//AES leftovers CLEAN later
+		/*
+			hash := sha256.Sum256(concat)
+			encKey := make([]byte, 32)
+			for jk, tmpo := range hash {
+				encKey[jk] = tmpo
+			}*/
+
+		//A place holder for the output wires
 		outWires[string(val.GateID)] = Wire{}
-		for _, gValue := range val.GarbledValues {
-			tmpWireLabel, ok := DecryptAES(encKey, gValue)
-			if ok {
-				outWires[string(val.GateID)] = Wire{
-					WireLabel: tmpWireLabel,
+
+		//Loop over entries
+		for garbledKey := range val.GarbledValuesC1 {
+
+			//Decrypt the mask
+			outMask, err := elgamal.Decrypt(privMask, new(big.Int).SetBytes(val.EncryptedMaskC1[garbledKey]), new(big.Int).SetBytes(val.EncryptedMaskC2[garbledKey]))
+
+			//if decrypted
+			if err == nil {
+
+				//Decrypt the masked output label
+				outLabelMasked, err := elgamal.Decrypt(privOutput, new(big.Int).SetBytes(val.GarbledValuesC1[garbledKey]), new(big.Int).SetBytes(val.GarbledValuesC2[garbledKey]))
+
+				//if decrypted
+				if err == nil {
+					//XOR the label and the mask to unmask it
+					tmpWireLabel := byteSliceXOR(outMask, outLabelMasked)
+
+					//Add the wire label to the map to continue the traversal
+					outWires[string(val.GateID)] = Wire{
+						WireLabel: tmpWireLabel,
+					}
+					//break out of looping over entries since you already found the output of the gate
+					break
 				}
-				break
+
 			}
+
+			//AES leftovers CLEAN later
+			/*
+
+				tmpWireLabel, ok := DecryptAES(encKey, gValue)
+				if ok {
+					outWires[string(val.GateID)] = Wire{
+						WireLabel: tmpWireLabel,
+					}
+					break
+				}
+			*/
 		}
+
+		//if no output label was found, then the evaluation failed
 		if (bytes.Compare(outWires[string(val.GateID)].WireLabel, Wire{}.WireLabel)) == 0 {
 			fmt.Println("Fail Evaluation Middle Gate")
 		} /*else {
@@ -1496,34 +1791,84 @@ func Evaluate(gc GarbledMessage) (result ResEval) {
 		}*/
 	}
 
+	//Traversing outputGates
 	for _, val := range gc.OutputGates {
 
 		//inCnt := len(val.GateInputs)
 		var concat []byte
-		for _, preGate := range val.GateInputs {
-			concat = append(concat, outWires[string(preGate)].WireLabel...)
+		var finalInput []byte
+		for kGate, preGate := range val.GateInputs {
+			if kGate == len(val.GateInputs)-1 {
+				//The final input label
+				finalInput = outWires[string(preGate)].WireLabel
+			} else {
+				//The concatentation of all previous labels
+				concat = append(concat, outWires[string(preGate)].WireLabel...)
+			}
 			//wInCnt++
 		}
+		//concatenating with the gate ID
 		concat = append(concat, []byte(val.GateID)...)
-		hash := sha256.Sum256(concat)
+
+		//Generate Keys:
+		privMask := GenerateElGamalKey(concat)
+		privOutput := GenerateElGamalKey(finalInput)
+
+		//AES leftovers CLEAN later
+		/*hash := sha256.Sum256(concat)
 		encKey := make([]byte, 32)
 		for jk, tmpo := range hash {
 			encKey[jk] = tmpo
-		}
+		}*/
+
+		//A place holder for the output wires
 		outWires[string(val.GateID)] = Wire{}
-		for _, gValue := range val.GarbledValues {
-			tmpWireLabel, ok := DecryptAES(encKey, gValue)
-			if ok {
-				//fmt.Println("\nI found my way out\n")
-				outWires[string(val.GateID)] = Wire{
-					WireLabel: tmpWireLabel,
+		//Loop over entries
+		for garbledKey := range val.GarbledValuesC1 {
+
+			//Decrypt the mask
+			outMask, err := elgamal.Decrypt(privMask, new(big.Int).SetBytes(val.EncryptedMaskC1[garbledKey]), new(big.Int).SetBytes(val.EncryptedMaskC2[garbledKey]))
+
+			//if decrypted
+			if err == nil {
+
+				//Decrypt the masked output label
+				outLabelMasked, err := elgamal.Decrypt(privOutput, new(big.Int).SetBytes(val.GarbledValuesC1[garbledKey]), new(big.Int).SetBytes(val.GarbledValuesC2[garbledKey]))
+
+				//if decrypted
+				if err == nil {
+					//XOR the label and the mask to unmask it
+					tmpWireLabel := byteSliceXOR(outMask, outLabelMasked)
+
+					//Add the wire label to the map to continue the traversal
+					outWires[string(val.GateID)] = Wire{
+						WireLabel: tmpWireLabel,
+					}
+
+					//Appending to the result message sent back
+					result.Res = append(result.Res, tmpWireLabel)
+					//break out of looping over entries since you already found the output of the gate
+					break
 				}
-				result.Res = append(result.Res, tmpWireLabel)
-				break
-			} /*else {
+
+			}
+
+			//AES leftovers CLEAN later
+			/*
+				tmpWireLabel, ok := DecryptAES(encKey, gValue)
+				if ok {
+					//fmt.Println("\nI found my way out\n")
+					outWires[string(val.GateID)] = Wire{
+						WireLabel: tmpWireLabel,
+					}
+					result.Res = append(result.Res, tmpWireLabel)
+					break
+				} */ /*else {
 				fmt.Println("\nStill Trying to Find my way out\n")
 			}*/
 		}
+
+		//if no output label was found, then the evaluation failed
 		if (bytes.Compare(outWires[string(val.GateID)].WireLabel, Wire{}.WireLabel)) == 0 {
 			fmt.Println("Fail Evaluation Output Gate")
 		} /*else {
@@ -1697,4 +2042,41 @@ func GetPartyInfo() (PartyInfo, []byte) {
 //ReRand does nothing for now
 func ReRand(gcm GarbledMessage, r Randomness) GarbledMessage {
 	return gcm
+}
+
+func fromHex(hex string) *big.Int {
+	n, ok := new(big.Int).SetString(hex, 16)
+	if !ok {
+		panic("failed to parse hex number")
+	}
+	return n
+}
+
+// This is the 1024-bit MODP group from RFC 5114, section 2.1:
+const primeHex = "B10B8F96A080E01DDE92DE5EAE5D54EC52C99FBCFB06A3C69A6A9DCA52D23B616073E28675A23D189838EF1E2EE652C013ECB4AEA906112324975C3CD49B83BFACCBDD7D90C4BD7098488E9C219A73724EFFD6FAE5644738FAA31A4FF55BCCC0A151AF5F0DC8B4BD45BF37DF365C1A65E68CFDA76D4DA708DF1FB2BC2E4A4371"
+
+const generatorHex = "A4D1CBD5C3FD34126765A442EFB99905F8104DD258AC507FD6406CFF14266D31266FEA1E5C41564B777E690F5504F213160217B4B01B886A5E91547F9E2749F4D7FBD7D3B9A92EE1909D0D2263F80A76A6A24C087A091F531DBF0A0169B6A28AD662A4D18E73AFA32D779D5918D08BC8858F4DCEF97C2A24855E6EEB22B3B2E5"
+
+//GenerateElGamalKey takes a hexadecimal number and generates a private key
+func GenerateElGamalKey(hexS []byte) *elgamal.PrivateKey {
+
+	priv := &elgamal.PrivateKey{
+		PublicKey: elgamal.PublicKey{
+			G: fromHex(generatorHex),
+			P: fromHex(primeHex),
+		},
+		X: fromHex(hex.EncodeToString(hexS)),
+	}
+
+	priv.Y = new(big.Int).Exp(priv.G, priv.X, priv.P)
+
+	return priv
+}
+
+func byteSliceXOR(A []byte, B []byte) (C []byte) {
+	C = []byte{}
+	for key, val := range A {
+		C = append(C, val^B[key])
+	}
+	return
 }
