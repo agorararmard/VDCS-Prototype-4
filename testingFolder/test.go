@@ -12,6 +12,7 @@ import (
 	"crypto/x509"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"strconv"
 )
@@ -275,4 +276,24 @@ func main() {
 	/** converting the i2 variable into a string using FormatInt method */
 	str2 := strconv.FormatInt(int64(i2), 10)
 	fmt.Println(str2)
+
+	c := []byte("Hi World I'm Amr")
+	d := []byte("Yes I am")
+	e := ByteSliceMul(c, d)
+	fmt.Println("Now multiplying")
+
+	fmt.Println(new(big.Int).SetBytes(c))
+	fmt.Println(new(big.Int).SetBytes(d))
+
+	fmt.Println(new(big.Int).SetBytes(e))
+	test := new(big.Int)
+	fmt.Println(test.Mul(new(big.Int).SetBytes(c), new(big.Int).SetBytes(d)))
+	fmt.Println(test.Bytes())
+}
+
+//ByteSliceMul performs multiplication of A * B by converting them into Big Ints and storing the byte slice value into C
+func ByteSliceMul(A []byte, B []byte) (C []byte) {
+
+	C = (new(big.Int).Mul(new(big.Int).SetBytes(A), new(big.Int).SetBytes(B))).Bytes()
+	return
 }

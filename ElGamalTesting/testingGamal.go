@@ -157,6 +157,9 @@ func main() {
 	//Generate Keys:
 	privMask := GenerateKey(arrIn[0])
 	privOutput := GenerateKey(arrIn[1])
+	fmt.Println("My little test")
+	fmt.Println(privOutput.X.Bytes())
+	fmt.Println(arrIn[1])
 
 	maskC1, maskC2, err := elgamal.Encrypt(rand.Reader, &privMask.PublicKey, mask[0])
 	tmpSlice := byteSliceXOR(mask[0], arrOut[0])
