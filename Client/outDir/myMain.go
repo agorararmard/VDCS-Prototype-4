@@ -33,8 +33,8 @@ func main() {
 	go vdcs.Comm("myEqual_string_1_string_1", 0, 3, 1, _myEqual_string_1_string_1Ch0)
 
 	fmt.Println("Here is to running the code")
-	var i string = "a"
-	var j string = "a"
+	var i string = "abcdabcdabcdabcdabcd"
+	var j string = "abcdabcdabcdabcdabcd"
 	//VDCS
 	if eval0(i, j, 0, _myEqual_string_1_string_1Ch0) == true {
 		fmt.Println("i == j")
@@ -42,7 +42,7 @@ func main() {
 		fmt.Println("i != j")
 	}
 
-	var z string = "b"
+	var z string = "abcdabcdggggabcdabcd"
 	//VDCS
 	if eval1(i, z, 1, _myEqual_string_1_string_1Ch1) == true {
 		fmt.Println("i == z")
