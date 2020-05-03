@@ -16,14 +16,15 @@ func main() {
 	vdcs.ReadyMutex.Unlock()
 	//This lines changed
 	username := os.Args[1]
-	actionAccount := os.Args[2]
-	passwordWallet := os.Args[3]
+	cleosKey := os.Args[2]
+	actionAccount := os.Args[3]
+	passwordWallet := os.Args[4]
 
 	fmt.Println("Here is to knowing the directory")
 	//This linees changed
 	vdcs.SetDecentralizedDirectoryInfo("127.0.0.1", actionAccount, passwordWallet)
 	fmt.Println("Here is to registering")
-	vdcs.ClientRegisterDecentralized(username)
+	vdcs.ClientRegisterDecentralized(username, cleosKey)
 
 	fmt.Println("Here is to launching threads")
 	go vdcs.ClientHTTP()

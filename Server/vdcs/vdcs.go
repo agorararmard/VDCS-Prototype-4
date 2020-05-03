@@ -117,6 +117,7 @@ type PartyInfo struct {
 //MyInfo container for general and private information about a node
 type MyInfo struct {
 	PartyInfo
+	CleosKey   []byte `json:"CleosKey"`
 	PrivateKey []byte `json:"PrivateKey"`
 }
 
@@ -251,10 +252,11 @@ var ReadyMutex = sync.RWMutex{}
 var MyResult ResEval
 
 //SetMyInfo sets the info of the current node
-func SetMyInfo(username string) {
+func SetMyInfo(username string, cleosKey string) {
 	pI, sk := GetPartyInfo(username)
 	MyOwnInfo = MyInfo{
 		PartyInfo:  pI,
+		CleosKey:   []byte(cleosKey),
 		PrivateKey: sk,
 	}
 }
@@ -330,7 +332,7 @@ func convertLocalToGlobal(lc localcircuit) (c Circuit) {
 
 //ClientRegister registers a client to directory of service
 func ClientRegister() {
-	SetMyInfo("")
+	SetMyInfo("", "")
 	regMsg := RegisterationMessage{
 		Type: []byte("Client"),
 		Server: ServerInfo{
@@ -346,8 +348,8 @@ func ClientRegister() {
 }
 
 //ClientRegisterDecentralized registers a client to the decentralized directory of service
-func ClientRegisterDecentralized(username string) {
-	SetMyInfo(username)
+func ClientRegisterDecentralized(username string, cleosKey string) {
+	SetMyInfo(username, cleosKey)
 	regMsg := RegisterationMessage{
 		Type: []byte("Client"),
 		Server: ServerInfo{
@@ -2154,7 +2156,7 @@ func UnlockWallet(url string, walletKey string) error {
 func RegisterOnDecentralizedDS(URL string, ActionAccount string, r RegisterationMessage) error {
 	Decentralization = true
 
-	cmd := exec.Command("cleos", "-u", URL, "push", "action", ActionAccount, "login", "[\""+string(r.Server.PartyInfo.UserName)+"\",\""+string(r.Type)+"\",\""+string(r.Server.PartyInfo.IP)+"\",\""+string(r.Server.PartyInfo.PublicKey)+"\",\""+strconv.Itoa(r.Server.ServerCapabilities.NumberOfGates)+"\",\""+strconv.Itoa(r.Server.PartyInfo.Port)+"\"]", "-p", string(r.Server.PartyInfo.UserName)+"@active")
+	cmd := exec.Command("cleos", "-u", URL, "push", "action", ActionAccount, "login", "[\""+string(r.Server.PartyInfo.UserName)+"\",\""+string(r.Type)+"\",\""+string(r.Server.PartyInfo.IP)+"\",\""+string(MyOwnInfo.CleosKey)+"\",\""+strconv.Itoa(r.Server.ServerCapabilities.NumberOfGates)+"\",\""+strconv.Itoa(r.Server.PartyInfo.Port)+"\"]", "-p", string(r.Server.PartyInfo.UserName)+"@active")
 	printCommand(cmd)
 	output, err := cmd.CombinedOutput()
 	printOutput(output)
@@ -2196,9 +2198,9 @@ func ConstructCycleStruct(outs []byte, size int) (bool, CycleMessage) {
 }
 
 //ServerRegisterDecentralized registers a client to the decentralized directory of service
-func ServerRegisterDecentralized(username string, numberOfGates int, feePerGate float64) {
+func ServerRegisterDecentralized(username string, cleosKey string, numberOfGates int, feePerGate float64) {
 
-	SetMyInfo(username)
+	SetMyInfo(username, cleosKey)
 	regMsg := RegisterationMessage{
 		Type: []byte("Server"),
 		Server: ServerInfo{
@@ -2209,12 +2211,11 @@ func ServerRegisterDecentralized(username string, numberOfGates int, feePerGate 
 			},
 		},
 	}
-
 	err := UnlockWallet(DecentralizedDirectoryInfo.URL, DecentralizedDirectoryInfo.PasswordWallet)
 
-	/*if err != nil {
+	if err != nil {
 		panic(err)
-	}*/
+	}
 	CreateAccount(DecentralizedDirectoryInfo.URL, regMsg)
 	err = RegisterOnDecentralizedDS(DecentralizedDirectoryInfo.URL, DecentralizedDirectoryInfo.ActionAccount, regMsg)
 	if err != nil {
@@ -2225,10 +2226,7 @@ func ServerRegisterDecentralized(username string, numberOfGates int, feePerGate 
 
 //CreateAccount to create a new account in the blockchain.
 func CreateAccount(URL string, r RegisterationMessage) {
-	fmt.Println("url: ", URL)
-	fmt.Println("username: ", string(r.Server.PartyInfo.UserName))
-	fmt.Println("pk: ", string(string("\"EOS6MRyAjQq8ud7hVNYcfnVPJqcVpscN5So8BhtHuGYqET5GDW5CV\"")))
-	cmd := exec.Command("cleos", "-u", URL, "create", "account", "eosio", string(r.Server.PartyInfo.UserName), string("EOS8QntPwDBNKDZ3ryL8iqM5ojmrxJSVAy1xoUQxeC6vtzqyRHfMe"))
+	cmd := exec.Command("cleos", "-u", URL, "create", "account", "eosio", string(r.Server.PartyInfo.UserName), string(MyOwnInfo.CleosKey))
 	printCommand(cmd)
 	output, err := cmd.CombinedOutput()
 	printError(err)

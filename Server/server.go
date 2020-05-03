@@ -40,13 +40,14 @@ func server() {
 func initServer() {
 	//set whatever to the directory
 	username := os.Args[1]
-	actionAccount := os.Args[2]
-	passwordWallet := os.Args[3]
+	cleosKey := os.Args[2]
+	actionAccount := os.Args[3]
+	passwordWallet := os.Args[4]
 
 	vdcs.SetDecentralizedDirectoryInfo("http://127.0.0.1:8888", actionAccount, passwordWallet)
 
 	//register now
-	vdcs.ServerRegisterDecentralized(username, 2000, 2)
+	vdcs.ServerRegisterDecentralized(username, cleosKey, 2000, 2)
 
 }
 
