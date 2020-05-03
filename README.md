@@ -5,5 +5,5 @@ A complete comprehensive documentation could be found at [Prototype_4_Documentat
 It is designed to produce n-sized == circuits. To run it use the command:
     ```
     go run ComparatorGenerator.go n
-    n: number of bytes
     ```
+ n: number of bytes
