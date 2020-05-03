@@ -39,19 +39,20 @@ func server() {
 
 func initServer() {
 	//set whatever to the directory
-	port, err := strconv.ParseInt(os.Args[1], 10, 32)
-	if err != nil {
-		log.Fatal("Error reading commandline arguments", err)
-	}
-	vdcs.SetDirectoryInfo([]byte("127.0.0.1"), int(port))
+	username := os.Args[1]
+	actionAccount := os.Args[2]
+	passwordWallet := os.Args[3]
+
+	vdcs.SetDecentralizedDirectoryInfo("http://127.0.0.1:8888", actionAccount, passwordWallet)
 
 	//register now
-	ServerRegister(300, 2.4)
+	vdcs.ServerRegisterDecentralized(username, 2000, 2)
+
 }
 
 func ServerRegister(numberOfGates int, feePerGate float64) {
 
-	vdcs.SetMyInfo()
+	vdcs.SetMyInfo("")
 	regMsg := vdcs.RegisterationMessage{
 		Type: []byte("Server"),
 		Server: vdcs.ServerInfo{

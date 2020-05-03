@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"fmt"
-	"log"
 	"os"
 	"strconv"
 	"time"
@@ -15,15 +14,16 @@ func main() {
 	vdcs.ReadyMutex.Lock()
 	vdcs.ReadyFlag = false
 	vdcs.ReadyMutex.Unlock()
-	port, err := strconv.ParseInt(os.Args[1], 10, 32)
-	if err != nil {
-		log.Fatal("Error reading commandline arguments", err)
-	}
-	fmt.Println("Here is to knowing the directory")
-	vdcs.SetDirectoryInfo([]byte("127.0.0.1"), int(port))
+	//This lines changed
+	username := os.Args[1]
+	actionAccount := os.Args[2]
+	passwordWallet := os.Args[3]
 
+	fmt.Println("Here is to knowing the directory")
+	//This linees changed
+	vdcs.SetDecentralizedDirectoryInfo("127.0.0.1", actionAccount, passwordWallet)
 	fmt.Println("Here is to registering")
-	vdcs.ClientRegister()
+	vdcs.ClientRegisterDecentralized(username)
 
 	fmt.Println("Here is to launching threads")
 	go vdcs.ClientHTTP()

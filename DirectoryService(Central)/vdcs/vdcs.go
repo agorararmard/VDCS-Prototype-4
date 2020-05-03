@@ -362,7 +362,6 @@ func ClientRegisterDecentralized(username string) {
 	if err != nil {
 		panic(err)
 	}
-	CreateAccount(DecentralizedDirectoryInfo.URL, regMsg)
 	err = RegisterOnDecentralizedDS(DecentralizedDirectoryInfo.URL, DecentralizedDirectoryInfo.ActionAccount, regMsg)
 	if err != nil {
 		panic(err)
@@ -2209,28 +2208,13 @@ func ServerRegisterDecentralized(username string, numberOfGates int, feePerGate 
 			},
 		},
 	}
-
 	err := UnlockWallet(DecentralizedDirectoryInfo.URL, DecentralizedDirectoryInfo.PasswordWallet)
-
-	/*if err != nil {
+	if err != nil {
 		panic(err)
-	}*/
-	CreateAccount(DecentralizedDirectoryInfo.URL, regMsg)
+	}
 	err = RegisterOnDecentralizedDS(DecentralizedDirectoryInfo.URL, DecentralizedDirectoryInfo.ActionAccount, regMsg)
 	if err != nil {
 		panic(err)
 	}
 
-}
-
-//CreateAccount to create a new account in the blockchain.
-func CreateAccount(URL string, r RegisterationMessage) {
-	fmt.Println("url: ", URL)
-	fmt.Println("username: ", string(r.Server.PartyInfo.UserName))
-	fmt.Println("pk: ", string(string("\"EOS6MRyAjQq8ud7hVNYcfnVPJqcVpscN5So8BhtHuGYqET5GDW5CV\"")))
-	cmd := exec.Command("cleos", "-u", URL, "create", "account", "eosio", string(r.Server.PartyInfo.UserName), string("EOS8QntPwDBNKDZ3ryL8iqM5ojmrxJSVAy1xoUQxeC6vtzqyRHfMe"))
-	printCommand(cmd)
-	output, err := cmd.CombinedOutput()
-	printError(err)
-	printOutput(output)
 }

@@ -1,6 +1,7 @@
 package vdcs
 
 import (
+	"bufio"
 	"bytes"
 	"crypto"
 	"crypto/aes"
@@ -20,7 +21,9 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"strconv"
+	"strings"
 	"sync"
 
 	"./elgamal"
@@ -108,6 +111,7 @@ type PartyInfo struct {
 	IP        []byte `json:"IP"`
 	Port      int    `json:"Port"`
 	PublicKey []byte `json:"PublicKey"`
+	UserName  []byte `json:"UserName"`
 }
 
 //MyInfo container for general and private information about a node
@@ -217,11 +221,25 @@ var DirctoryInfo = struct {
 	IP:   []byte(""),
 }
 
+//DecentralizedDirectoryInfo Global Variable to store Directory communication info
+var DecentralizedDirectoryInfo = struct {
+	URL            string
+	ActionAccount  string
+	PasswordWallet string
+}{
+	URL:            "",
+	ActionAccount:  "",
+	PasswordWallet: "",
+}
+
 //MyOwnInfo personal info container
 var MyOwnInfo MyInfo
 
 //MyToken holds directory sent token
 var MyToken Token
+
+//Decentralization indicates whether the central or decentralized directory of service is used
+var Decentralization bool
 
 //ReadyFlag is a simulation for channels between the post handler and the eval function
 var ReadyFlag bool
@@ -233,8 +251,8 @@ var ReadyMutex = sync.RWMutex{}
 var MyResult ResEval
 
 //SetMyInfo sets the info of the current node
-func SetMyInfo() {
-	pI, sk := GetPartyInfo()
+func SetMyInfo(username string) {
+	pI, sk := GetPartyInfo(username)
 	MyOwnInfo = MyInfo{
 		PartyInfo:  pI,
 		PrivateKey: sk,
@@ -245,6 +263,13 @@ func SetMyInfo() {
 func SetDirectoryInfo(ip []byte, port int) {
 	DirctoryInfo.Port = port
 	DirctoryInfo.IP = ip
+}
+
+//SetDecentralizedDirectoryInfo to set the decentralized dircotry info
+func SetDecentralizedDirectoryInfo(url string, actionAccount string, passwordWallet string) {
+	DecentralizedDirectoryInfo.URL = url
+	DecentralizedDirectoryInfo.ActionAccount = actionAccount
+	DecentralizedDirectoryInfo.PasswordWallet = passwordWallet
 }
 
 //GetCircuitSize get the number of gates in a circuit
@@ -305,7 +330,7 @@ func convertLocalToGlobal(lc localcircuit) (c Circuit) {
 
 //ClientRegister registers a client to directory of service
 func ClientRegister() {
-	SetMyInfo()
+	SetMyInfo("")
 	regMsg := RegisterationMessage{
 		Type: []byte("Client"),
 		Server: ServerInfo{
@@ -317,6 +342,30 @@ func ClientRegister() {
 		},
 	}
 	for !SendToDirectory(regMsg, DirctoryInfo.IP, DirctoryInfo.Port) {
+	}
+}
+
+//ClientRegisterDecentralized registers a client to the decentralized directory of service
+func ClientRegisterDecentralized(username string) {
+	SetMyInfo(username)
+	regMsg := RegisterationMessage{
+		Type: []byte("Client"),
+		Server: ServerInfo{
+			PartyInfo: MyOwnInfo.PartyInfo,
+			ServerCapabilities: ServerCapabilities{
+				NumberOfGates: 0,
+				FeePerGate:    0,
+			},
+		},
+	}
+	err := UnlockWallet(DecentralizedDirectoryInfo.URL, DecentralizedDirectoryInfo.PasswordWallet)
+	if err != nil {
+		panic(err)
+	}
+	CreateAccount(DecentralizedDirectoryInfo.URL, regMsg)
+	err = RegisterOnDecentralizedDS(DecentralizedDirectoryInfo.URL, DecentralizedDirectoryInfo.ActionAccount, regMsg)
+	if err != nil {
+		panic(err)
 	}
 }
 
@@ -403,10 +452,18 @@ func Comm(cir string, cID int64, numberOfServers int, feePerGate float64, chVDCS
 			},
 		},
 	}
-
-	cycleMessage, ok := GetFromDirectory(cycleRequestMessage, DirctoryInfo.IP, DirctoryInfo.Port)
-	for ok == false {
+	cycleMessage := CycleMessage{}
+	ok := false
+	if Decentralization == true {
+		ok, cycleMessage = FetchCycleDecentralized(DecentralizedDirectoryInfo.URL, DecentralizedDirectoryInfo.ActionAccount, cycleRequestMessage)
+		if ok == false {
+			ok, cycleMessage = FetchCycleDecentralized(DecentralizedDirectoryInfo.URL, DecentralizedDirectoryInfo.ActionAccount, cycleRequestMessage)
+		}
+	} else {
 		cycleMessage, ok = GetFromDirectory(cycleRequestMessage, DirctoryInfo.IP, DirctoryInfo.Port)
+		for ok == false {
+			cycleMessage, ok = GetFromDirectory(cycleRequestMessage, DirctoryInfo.IP, DirctoryInfo.Port)
+		}
 	}
 
 	msgArray, randNess, keys := GenerateMessageArray(cycleMessage, cID, mCirc)
@@ -986,6 +1043,8 @@ func GetFromServer(tokenChallenge Token, ip []byte, port int) (token Token, ok b
 
 //SendToDirectory Invokes the post method on the directory
 func SendToDirectory(k RegisterationMessage, ip []byte, port int) bool {
+	Decentralization = false
+
 	circuitJSON, err := json.Marshal(k)
 	req, err := http.NewRequest("POST", "http://"+string(ip)+":"+strconv.Itoa(port)+"/post", bytes.NewBuffer(circuitJSON))
 	if err != nil {
@@ -1989,7 +2048,7 @@ func IPtoProperByte(ip net.IP) []byte {
 }
 
 //GetPartyInfo for a party to extract his own communication info
-func GetPartyInfo() (PartyInfo, []byte) {
+func GetPartyInfo(username string) (PartyInfo, []byte) {
 	port, err := GetFreePort()
 	if err != nil {
 		panic(err)
@@ -2006,6 +2065,7 @@ func GetPartyInfo() (PartyInfo, []byte) {
 		IP:        IPtoProperByte(ip),
 		Port:      port,
 		PublicKey: BytesFromRSAPublicKey(pk),
+		UserName:  []byte(username),
 	}
 	return pI, BytesFromRSAPrivateKey(sk)
 }
@@ -2062,4 +2122,111 @@ func ByteSliceMul(A []byte, B []byte) (X []byte) {
 	C = C.Mod(C, fromHex(primeHex))
 	X = C.Bytes()
 	return
+}
+
+//SYS CALL PRINT FUNCTIONS
+func printCommand(cmd *exec.Cmd) {
+	fmt.Printf("==> Executing: %s\n", strings.Join(cmd.Args, " "))
+}
+
+func printError(err error) {
+	if err != nil {
+		os.Stderr.WriteString(fmt.Sprintf("==> Error: %s\n", err.Error()))
+	}
+}
+
+func printOutput(outs []byte) {
+	if len(outs) > 0 {
+		fmt.Printf("==> Output: %s\n", string(outs))
+	}
+}
+
+//UnlockWallet for a node to unlock its eosio wallet
+func UnlockWallet(url string, walletKey string) error {
+	cmd := exec.Command("cleos", "-u", url, "wallet", "unlock", "--password", walletKey)
+	printCommand(cmd)
+	output, err := cmd.CombinedOutput()
+	printOutput(output)
+	return err
+}
+
+//RegisterOnDecentralizedDS to register in the decentralized Directory of Service
+func RegisterOnDecentralizedDS(URL string, ActionAccount string, r RegisterationMessage) error {
+	Decentralization = true
+
+	cmd := exec.Command("cleos", "-u", URL, "push", "action", ActionAccount, "login", "[\""+string(r.Server.PartyInfo.UserName)+"\",\""+string(r.Type)+"\",\""+string(r.Server.PartyInfo.IP)+"\",\""+string(r.Server.PartyInfo.PublicKey)+"\",\""+strconv.Itoa(r.Server.ServerCapabilities.NumberOfGates)+"\",\""+strconv.Itoa(r.Server.PartyInfo.Port)+"\"]", "-p", string(r.Server.PartyInfo.UserName)+"@active")
+	printCommand(cmd)
+	output, err := cmd.CombinedOutput()
+	printOutput(output)
+	return err
+
+}
+
+//FetchCycleDecentralized fetches a cycle from the decentralized directory of service
+func FetchCycleDecentralized(URL string, ActionAccount string, c CycleRequestMessage) (bool, CycleMessage) {
+	cmd := exec.Command("cleos", "-u", URL, "--verbose", "push", "action", ActionAccount, "fetchcycle", "[\""+strconv.Itoa(c.FunctionInfo.NumberOfServers)+"\",\""+strconv.Itoa(c.FunctionInfo.ServerCapabilities.NumberOfGates)+"\"]", "-p", ActionAccount+"@active")
+	printCommand(cmd)
+	output, err := cmd.CombinedOutput()
+	printError(err)
+	printOutput(output)
+	return ConstructCycleStruct(output, c.FunctionInfo.NumberOfServers)
+}
+
+//ConstructCycleStruct construct the cycle returned from the transaction
+func ConstructCycleStruct(outs []byte, size int) (bool, CycleMessage) {
+	var cm CycleMessage
+	cm.Cycle.ServersCycle = make([]PartyInfo, size)
+	str := string(outs[:])
+	if strings.Contains(str, "fetch cycle success") {
+		scanner := bufio.NewScanner(strings.NewReader(str))
+		i := 0
+		for scanner.Scan() {
+			if strings.Contains(scanner.Text(), ">>") && !(strings.Contains(scanner.Text(), "fetch cycle success")) {
+				s := strings.Split(scanner.Text(), " ")
+				cm.Cycle.ServersCycle[i].IP = []byte(s[2])
+				cm.Cycle.ServersCycle[i].PublicKey = []byte(s[3])
+				cm.Cycle.ServersCycle[i].Port, _ = strconv.Atoi(s[4])
+				i++
+			}
+		}
+		return true, cm
+	}
+	return false, cm
+
+}
+
+//ServerRegisterDecentralized registers a client to the decentralized directory of service
+func ServerRegisterDecentralized(username string, numberOfGates int, feePerGate float64) {
+
+	SetMyInfo(username)
+	regMsg := RegisterationMessage{
+		Type: []byte("Server"),
+		Server: ServerInfo{
+			PartyInfo: MyOwnInfo.PartyInfo,
+			ServerCapabilities: ServerCapabilities{
+				NumberOfGates: numberOfGates,
+				FeePerGate:    feePerGate,
+			},
+		},
+	}
+	err := UnlockWallet(DecentralizedDirectoryInfo.URL, DecentralizedDirectoryInfo.PasswordWallet)
+
+	if err != nil {
+		panic(err)
+	}
+	CreateAccount(DecentralizedDirectoryInfo.URL, regMsg)
+	err = RegisterOnDecentralizedDS(DecentralizedDirectoryInfo.URL, DecentralizedDirectoryInfo.ActionAccount, regMsg)
+	if err != nil {
+		panic(err)
+	}
+
+}
+
+//CreateAccount to create a new account in the blockchain.
+func CreateAccount(URL string, r RegisterationMessage) {
+	cmd := exec.Command("cleos", "-u", URL, "create", "account", "eosio", string(r.Server.PartyInfo.UserName), string(r.Server.PartyInfo.PublicKey))
+	printCommand(cmd)
+	output, err := cmd.CombinedOutput()
+	printError(err)
+	printOutput(output)
 }
