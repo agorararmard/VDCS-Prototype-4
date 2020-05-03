@@ -1,13 +1,17 @@
 #include "../include/dirservice.hpp"
 
+ACTION dirservice::droptable(){
+    for(auto itr = _users.begin(); itr != _users.end();) {
+        itr = _users.erase(itr);
+    }
+}
 ACTION dirservice::login(name userName,
                         string type,
                         string IP,
                         string PublicKey,
                         uint64_t ProccessingPower,
                         uint64_t Port) {
-  require_auth(userName);
-  
+
   auto user_iterator = _users.find(userName.value);
   if(user_iterator==_users.end()){
     user_iterator= _users.emplace
@@ -24,19 +28,16 @@ ACTION dirservice::login(name userName,
 }
     ACTION dirservice::fetchcycle(uint64_t NumberOfServers,
                                   uint64_t MinProccessingPower){
-      cycle temp[NumberOfServers];
       int counter=0;
       for (auto iter = _users.begin();
             iter != _users.end()&&
             NumberOfServers!=counter;
             iter++)
       {
-        if (iter->type == "server" && iter->ProccessingPower>= MinProccessingPower)
+        if (iter->type == "Server" && iter->ProccessingPower>= MinProccessingPower)
         {   
-            temp[counter].userName=iter->userName;
-            temp[counter].IP=iter->IP;
-            temp[counter].Port=iter->Port;
-            temp[counter++].PublicKey=iter->PublicKey;
+         print(iter->userName," ",iter->IP," ",iter->PublicKey," ",iter->Port,"\n");
+         counter++;
         }
 
       }
@@ -45,14 +46,6 @@ ACTION dirservice::login(name userName,
       }
       else{
          print("fetch cycle success\n");
-      for(int i=0;i<counter;i++)
-          {
-            auto itr = _users.find(temp[i].userName.value);
-            eosio::check(itr != _users.end(), "Address for account not found");
-            _users.erase( itr );
-            eosio::check(itr != _users.end(), "Address not erased properly");
-            print(temp[i].userName," ",temp[i].IP," ",temp[i].PublicKey," ",temp[i].Port,"\n");
-          }
 
       }
     }
@@ -210,4 +203,4 @@ ACTION dirservice::close( const name& owner, const symbol& symbol )
    acnts.erase( it );
 }
 
-EOSIO_DISPATCH(dirservice, (login)(fetchcycle)(create)(retire)(transfer)(issue)(open)(close))
+EOSIO_DISPATCH(dirservice, (droptable)(login)(fetchcycle)(create)(retire)(transfer)(issue)(open)(close))

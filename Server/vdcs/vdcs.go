@@ -10,6 +10,7 @@ import (
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -361,9 +362,6 @@ func ClientRegisterDecentralized(username string, cleosKey string) {
 		},
 	}
 	err := UnlockWallet(DecentralizedDirectoryInfo.URL, DecentralizedDirectoryInfo.PasswordWallet)
-	if err != nil {
-		panic(err)
-	}
 	CreateAccount(DecentralizedDirectoryInfo.URL, regMsg)
 	err = RegisterOnDecentralizedDS(DecentralizedDirectoryInfo.URL, DecentralizedDirectoryInfo.ActionAccount, regMsg)
 	if err != nil {
@@ -458,9 +456,7 @@ func Comm(cir string, cID int64, numberOfServers int, feePerGate float64, chVDCS
 	ok := false
 	if Decentralization == true {
 		ok, cycleMessage = FetchCycleDecentralized(DecentralizedDirectoryInfo.URL, DecentralizedDirectoryInfo.ActionAccount, cycleRequestMessage)
-		if ok == false {
-			ok, cycleMessage = FetchCycleDecentralized(DecentralizedDirectoryInfo.URL, DecentralizedDirectoryInfo.ActionAccount, cycleRequestMessage)
-		}
+
 	} else {
 		cycleMessage, ok = GetFromDirectory(cycleRequestMessage, DirctoryInfo.IP, DirctoryInfo.Port)
 		for ok == false {
@@ -1407,12 +1403,12 @@ func Garble(circ CircuitMessage) GarbledMessage {
 			//The loop extracts the value of the wire from the index and fetches the corresponding wire label from the container descriped above
 			//The concatenation of the n-1 input wires is used to encrypt
 			for i := 0; i < inCnt-1; /*You just added this -1*/ i++ {
-				idx := ((key >> i) & (1))
+				idx := ((key >> uint(i)) & (1))
 				firstInput = append(firstInput, inWires[string(val.GateID)][(i*2)+idx].WireLabel...)
 			} //Now it only extracts the first input wire in a 2-input or a 1-input gate/ no masks to encrypt
 
 			//The final input wire is extracted
-			finalInput = inWires[string(val.GateID)][((inCnt-1)*2)+((key>>(inCnt-1))&(1))].WireLabel
+			finalInput = inWires[string(val.GateID)][((inCnt-1)*2)+((key>>uint(inCnt-1))&(1))].WireLabel
 
 			//ElGamal Encryption Process:
 
@@ -1501,12 +1497,12 @@ func Garble(circ CircuitMessage) GarbledMessage {
 			//The loop extracts the value of the wire from the index and fetches the corresponding wire label from the container descriped above
 			//The concatenation of the n-1 input wires is used to encrypt
 			for i := 0; i < inCnt-1; /*You just added this -1*/ i++ {
-				idx := ((key >> i) & (1))
+				idx := ((key >> uint(i)) & (1))
 				firstInput = append(firstInput, inWires[string(val.GateID)][(i*2)+idx].WireLabel...)
 			} //Now it only extracts the first input wire in a 2-input or a 1-input gate/ no masks to encrypt
 
 			//The final input wire is extracted
-			finalInput = inWires[string(val.GateID)][((inCnt-1)*2)+((key>>(inCnt-1))&(1))].WireLabel
+			finalInput = inWires[string(val.GateID)][((inCnt-1)*2)+((key>>uint(inCnt-1))&(1))].WireLabel
 
 			//ElGamal Encryption Process:
 			//Generate Keys:
@@ -1600,12 +1596,12 @@ func Garble(circ CircuitMessage) GarbledMessage {
 			//The loop extracts the value of the wire from the index and fetches the corresponding wire label from the container descriped above
 			//The concatenation of the n-1 input wires is used to encrypt
 			for i := 0; i < inCnt-1; /*You just added this -1*/ i++ {
-				idx := ((key >> i) & (1))
+				idx := ((key >> uint(i)) & (1))
 				firstInput = append(firstInput, inWires[string(val.GateID)][(i*2)+idx].WireLabel...)
 			} //Now it only extracts the first input wire in a 2-input or a 1-input gate/ no masks to encrypt
 
 			//The final input wire is used to encrypt the mask
-			finalInput = inWires[string(val.GateID)][((inCnt-1)*2)+((key>>(inCnt-1))&(1))].WireLabel
+			finalInput = inWires[string(val.GateID)][((inCnt-1)*2)+((key>>uint(inCnt-1))&(1))].WireLabel
 
 			//ElGamal Encryption Process:
 			//Generate Keys:
@@ -2156,7 +2152,7 @@ func UnlockWallet(url string, walletKey string) error {
 func RegisterOnDecentralizedDS(URL string, ActionAccount string, r RegisterationMessage) error {
 	Decentralization = true
 
-	cmd := exec.Command("cleos", "-u", URL, "push", "action", ActionAccount, "login", "[\""+string(r.Server.PartyInfo.UserName)+"\",\""+string(r.Type)+"\",\""+string(r.Server.PartyInfo.IP)+"\",\""+string(MyOwnInfo.CleosKey)+"\",\""+strconv.Itoa(r.Server.ServerCapabilities.NumberOfGates)+"\",\""+strconv.Itoa(r.Server.PartyInfo.Port)+"\"]", "-p", string(r.Server.PartyInfo.UserName)+"@active")
+	cmd := exec.Command("cleos", "-u", URL, "push", "action", ActionAccount, "login", "[\""+string(r.Server.PartyInfo.UserName)+"\",\""+string(r.Type)+"\",\""+string(r.Server.PartyInfo.IP)+"\",\""+hex.EncodeToString(r.Server.PartyInfo.PublicKey)+"\",\""+strconv.Itoa(r.Server.ServerCapabilities.NumberOfGates)+"\",\""+strconv.Itoa(r.Server.PartyInfo.Port)+"\"]", "-p", string(r.Server.PartyInfo.UserName)+"@active")
 	printCommand(cmd)
 	output, err := cmd.CombinedOutput()
 	printOutput(output)
@@ -2166,7 +2162,7 @@ func RegisterOnDecentralizedDS(URL string, ActionAccount string, r Registeration
 
 //FetchCycleDecentralized fetches a cycle from the decentralized directory of service
 func FetchCycleDecentralized(URL string, ActionAccount string, c CycleRequestMessage) (bool, CycleMessage) {
-	cmd := exec.Command("cleos", "-u", URL, "--verbose", "push", "action", ActionAccount, "fetchcycle", "[\""+strconv.Itoa(c.FunctionInfo.NumberOfServers)+"\",\""+strconv.Itoa(c.FunctionInfo.ServerCapabilities.NumberOfGates)+"\"]", "-p", ActionAccount+"@active")
+	cmd := exec.Command("cleos", "-u", URL, "--verbose", "push", "action", ActionAccount, "fetchcycle", "[\""+strconv.Itoa(c.FunctionInfo.NumberOfServers)+"\",\""+strconv.Itoa(c.FunctionInfo.ServerCapabilities.NumberOfGates)+"\"]", "-p", ActionAccount+"@active", "-f")
 	printCommand(cmd)
 	output, err := cmd.CombinedOutput()
 	printError(err)
@@ -2186,7 +2182,7 @@ func ConstructCycleStruct(outs []byte, size int) (bool, CycleMessage) {
 			if strings.Contains(scanner.Text(), ">>") && !(strings.Contains(scanner.Text(), "fetch cycle success")) {
 				s := strings.Split(scanner.Text(), " ")
 				cm.Cycle.ServersCycle[i].IP = []byte(s[2])
-				cm.Cycle.ServersCycle[i].PublicKey = []byte(s[3])
+				cm.Cycle.ServersCycle[i].PublicKey, _ = hex.DecodeString(s[3])
 				cm.Cycle.ServersCycle[i].Port, _ = strconv.Atoi(s[4])
 				i++
 			}
@@ -2213,9 +2209,6 @@ func ServerRegisterDecentralized(username string, cleosKey string, numberOfGates
 	}
 	err := UnlockWallet(DecentralizedDirectoryInfo.URL, DecentralizedDirectoryInfo.PasswordWallet)
 
-	if err != nil {
-		panic(err)
-	}
 	CreateAccount(DecentralizedDirectoryInfo.URL, regMsg)
 	err = RegisterOnDecentralizedDS(DecentralizedDirectoryInfo.URL, DecentralizedDirectoryInfo.ActionAccount, regMsg)
 	if err != nil {
@@ -2226,7 +2219,7 @@ func ServerRegisterDecentralized(username string, cleosKey string, numberOfGates
 
 //CreateAccount to create a new account in the blockchain.
 func CreateAccount(URL string, r RegisterationMessage) {
-	cmd := exec.Command("cleos", "-u", URL, "create", "account", "eosio", string(r.Server.PartyInfo.UserName), string(MyOwnInfo.CleosKey))
+	cmd := exec.Command("cleos", "-u", URL, "create", "account", "eosio", string(r.Server.PartyInfo.UserName), "EOS6MRyAjQq8ud7hVNYcfnVPJqcVpscN5So8BhtHuGYqET5GDW5CV")
 	printCommand(cmd)
 	output, err := cmd.CombinedOutput()
 	printError(err)

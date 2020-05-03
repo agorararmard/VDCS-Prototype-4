@@ -22,7 +22,7 @@ func main() {
 
 	fmt.Println("Here is to knowing the directory")
 	//This linees changed
-	vdcs.SetDecentralizedDirectoryInfo("127.0.0.1", actionAccount, passwordWallet)
+	vdcs.SetDecentralizedDirectoryInfo("http://127.0.0.1:8888", actionAccount, passwordWallet)
 	fmt.Println("Here is to registering")
 	vdcs.ClientRegisterDecentralized(username, cleosKey)
 
@@ -34,8 +34,8 @@ func main() {
 	go vdcs.Comm("myEqual_string_1_string_1", 0, 3, 1, _myEqual_string_1_string_1Ch0)
 
 	fmt.Println("Here is to running the code")
-	var i string = "abcdabcdabcdabcdabcd"
-	var j string = "abcdabcdabcdabcdabcd"
+	var i string = "a"
+	var j string = "a"
 	//VDCS
 	if eval0(i, j, 0, _myEqual_string_1_string_1Ch0) == true {
 		fmt.Println("i == j")
@@ -43,7 +43,7 @@ func main() {
 		fmt.Println("i != j")
 	}
 
-	var z string = "abcdabcdggggabcdabcd"
+	var z string = "b"
 	//VDCS
 	if eval1(i, z, 1, _myEqual_string_1_string_1Ch1) == true {
 		fmt.Println("i == z")
@@ -62,9 +62,9 @@ func eval0(i string, j string, cID int64, chVDCSEvalCircRes <-chan vdcs.ChannelC
 	myInWires := make([]vdcs.Wire, len(_inWire0)*8*2)
 	for idxByte := 0; idxByte < len(_inWire0); idxByte++ {
 		for idxBit := 0; idxBit < 8; idxBit++ {
-			contA := (_inWire0[idxByte] >> idxBit) & 1
+			contA := (_inWire0[idxByte] >> uint(idxBit)) & 1
 			myInWires[(idxBit+idxByte*8)*2] = k.InputWires[(idxBit+idxByte*8)*4+int(contA)]
-			contB := (_inWire1[idxByte] >> idxBit) & 1
+			contB := (_inWire1[idxByte] >> uint(idxBit)) & 1
 			myInWires[(idxBit+idxByte*8)*2+1] = k.InputWires[(idxBit+idxByte*8)*4+2+int(contB)]
 		}
 	}
@@ -132,9 +132,9 @@ func eval1(i string, z string, cID int64, chVDCSEvalCircRes <-chan vdcs.ChannelC
 	myInWires := make([]vdcs.Wire, len(_inWire0)*8*2)
 	for idxByte := 0; idxByte < len(_inWire0); idxByte++ {
 		for idxBit := 0; idxBit < 8; idxBit++ {
-			contA := (_inWire0[idxByte] >> idxBit) & 1
+			contA := (_inWire0[idxByte] >> uint(idxBit)) & 1
 			myInWires[(idxBit+idxByte*8)*2] = k.InputWires[(idxBit+idxByte*8)*4+int(contA)]
-			contB := (_inWire1[idxByte] >> idxBit) & 1
+			contB := (_inWire1[idxByte] >> uint(idxBit)) & 1
 			myInWires[(idxBit+idxByte*8)*2+1] = k.InputWires[(idxBit+idxByte*8)*4+2+int(contB)]
 		}
 	}

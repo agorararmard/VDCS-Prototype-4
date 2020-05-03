@@ -60,6 +60,11 @@
             ]
         },
         {
+            "name": "droptable",
+            "base": "",
+            "fields": []
+        },
+        {
             "name": "fetchcycle",
             "base": "",
             "fields": [
@@ -215,6 +220,11 @@
         {
             "name": "create",
             "type": "create",
+            "ricardian_contract": ""
+        },
+        {
+            "name": "droptable",
+            "type": "droptable",
             "ricardian_contract": ""
         },
         {

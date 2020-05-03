@@ -53,7 +53,7 @@ func initServer() {
 
 func ServerRegister(numberOfGates int, feePerGate float64) {
 
-	vdcs.SetMyInfo("")
+	vdcs.SetMyInfo("", "")
 	regMsg := vdcs.RegisterationMessage{
 		Type: []byte("Server"),
 		Server: vdcs.ServerInfo{

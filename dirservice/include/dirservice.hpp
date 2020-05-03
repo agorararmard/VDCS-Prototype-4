@@ -11,7 +11,7 @@ CONTRACT dirservice : public contract {
     contract(receiver,code,ds),
     _users(receiver,receiver.value)
     {}
-
+    ACTION droptable();
     ACTION login(name user,
                 string type,
                 string IP,
@@ -69,15 +69,6 @@ CONTRACT dirservice : public contract {
     };
     typedef multi_index
     <name("users"), userInfo> users_table;
-
-    struct cycle{
-      name      userName;
-      uint64_t  ProccessingPower=0;
-      uint64_t  Port;
-      string    IP;
-      string    type;
-      string    PublicKey;
-    };
 
     users_table _users;
 
