@@ -1,6 +1,7 @@
 package vdcs
 
 import (
+	"bufio"
 	"bytes"
 	"crypto"
 	"crypto/aes"
@@ -9,6 +10,7 @@ import (
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -20,7 +22,9 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"strconv"
+	"strings"
 	"sync"
 
 	"./elgamal"
@@ -108,11 +112,13 @@ type PartyInfo struct {
 	IP        []byte `json:"IP"`
 	Port      int    `json:"Port"`
 	PublicKey []byte `json:"PublicKey"`
+	UserName  []byte `json:"UserName"`
 }
 
 //MyInfo container for general and private information about a node
 type MyInfo struct {
 	PartyInfo
+	CleosKey   []byte `json:"CleosKey"`
 	PrivateKey []byte `json:"PrivateKey"`
 }
 
@@ -217,11 +223,25 @@ var DirctoryInfo = struct {
 	IP:   []byte(""),
 }
 
+//DecentralizedDirectoryInfo Global Variable to store Directory communication info
+var DecentralizedDirectoryInfo = struct {
+	URL            string
+	ActionAccount  string
+	PasswordWallet string
+}{
+	URL:            "",
+	ActionAccount:  "",
+	PasswordWallet: "",
+}
+
 //MyOwnInfo personal info container
 var MyOwnInfo MyInfo
 
 //MyToken holds directory sent token
 var MyToken Token
+
+//Decentralization indicates whether the central or decentralized directory of service is used
+var Decentralization bool
 
 //ReadyFlag is a simulation for channels between the post handler and the eval function
 var ReadyFlag bool
@@ -232,11 +252,15 @@ var ReadyMutex = sync.RWMutex{}
 //MyResult is a simulation for channels between the post handler and the eval function
 var MyResult ResEval
 
+// mutex for local com
+var cMutex = sync.RWMutex{}
+
 //SetMyInfo sets the info of the current node
-func SetMyInfo() {
-	pI, sk := GetPartyInfo()
+func SetMyInfo(username string, cleosKey string) {
+	pI, sk := GetPartyInfo(username)
 	MyOwnInfo = MyInfo{
 		PartyInfo:  pI,
+		CleosKey:   []byte(cleosKey),
 		PrivateKey: sk,
 	}
 }
@@ -245,6 +269,13 @@ func SetMyInfo() {
 func SetDirectoryInfo(ip []byte, port int) {
 	DirctoryInfo.Port = port
 	DirctoryInfo.IP = ip
+}
+
+//SetDecentralizedDirectoryInfo to set the decentralized dircotry info
+func SetDecentralizedDirectoryInfo(url string, actionAccount string, passwordWallet string) {
+	DecentralizedDirectoryInfo.URL = url
+	DecentralizedDirectoryInfo.ActionAccount = actionAccount
+	DecentralizedDirectoryInfo.PasswordWallet = passwordWallet
 }
 
 //GetCircuitSize get the number of gates in a circuit
@@ -305,7 +336,7 @@ func convertLocalToGlobal(lc localcircuit) (c Circuit) {
 
 //ClientRegister registers a client to directory of service
 func ClientRegister() {
-	SetMyInfo()
+	SetMyInfo("", "")
 	regMsg := RegisterationMessage{
 		Type: []byte("Client"),
 		Server: ServerInfo{
@@ -317,6 +348,27 @@ func ClientRegister() {
 		},
 	}
 	for !SendToDirectory(regMsg, DirctoryInfo.IP, DirctoryInfo.Port) {
+	}
+}
+
+//ClientRegisterDecentralized registers a client to the decentralized directory of service
+func ClientRegisterDecentralized(username string, cleosKey string) {
+	SetMyInfo(username, cleosKey)
+	regMsg := RegisterationMessage{
+		Type: []byte("Client"),
+		Server: ServerInfo{
+			PartyInfo: MyOwnInfo.PartyInfo,
+			ServerCapabilities: ServerCapabilities{
+				NumberOfGates: 0,
+				FeePerGate:    0,
+			},
+		},
+	}
+	err := UnlockWallet(DecentralizedDirectoryInfo.URL, DecentralizedDirectoryInfo.PasswordWallet)
+	CreateAccount(DecentralizedDirectoryInfo.URL, regMsg)
+	err = RegisterOnDecentralizedDS(DecentralizedDirectoryInfo.URL, DecentralizedDirectoryInfo.ActionAccount, regMsg)
+	if err != nil {
+		panic(err)
 	}
 }
 
@@ -382,6 +434,7 @@ func ClientHTTP() {
 
 //Comm basically, the channel will need to send the input/output mapping as well
 func Comm(cir string, cID int64, numberOfServers int, feePerGate float64, chVDCSCommCircRes chan<- ChannelContainer) {
+
 	file, _ := ioutil.ReadFile(cir + ".json")
 	localmCirc := localcircuit{}
 	err := json.Unmarshal([]byte(file), &localmCirc) //POSSIBLE BUG
@@ -403,13 +456,20 @@ func Comm(cir string, cID int64, numberOfServers int, feePerGate float64, chVDCS
 			},
 		},
 	}
-
-	cycleMessage, ok := GetFromDirectory(cycleRequestMessage, DirctoryInfo.IP, DirctoryInfo.Port)
-	for ok == false {
+	cycleMessage := CycleMessage{}
+	ok := false
+	if Decentralization == true {
+		ok, cycleMessage = FetchCycleDecentralized(DecentralizedDirectoryInfo.URL, DecentralizedDirectoryInfo.ActionAccount, cycleRequestMessage)
+	} else {
 		cycleMessage, ok = GetFromDirectory(cycleRequestMessage, DirctoryInfo.IP, DirctoryInfo.Port)
+		for ok == false {
+			cycleMessage, ok = GetFromDirectory(cycleRequestMessage, DirctoryInfo.IP, DirctoryInfo.Port)
+		}
 	}
 
+
 	msgArray, randNess, keys := GenerateMessageArray(cycleMessage, cID, mCirc)
+
 	//fmt.Println(cycleMessage)
 	//fmt.Println(keys) //store the keys somewhere for recovery or pass on channel
 
@@ -434,10 +494,12 @@ func Comm(cir string, cID int64, numberOfServers int, feePerGate float64, chVDCS
 	cc.PartyInfo = cycleMessage.ServersCycle[numberOfServers-1]
 	cc.Keys = keys
 	chVDCSCommCircRes <- cc
+
 }
 
 //GenerateMessageArray Takes a CycleMessage, a cID, and a circuit and creates a message array encrypted and returns it with the corresponding randomness for the user to use
 func GenerateMessageArray(cycleMessage CycleMessage, cID int64, circ Circuit) (mArr MessageArray, rArr []Randomness, keys [][]byte) {
+	cMutex.Lock()
 	numberOfServers := len(cycleMessage.ServersCycle)
 
 	rArr = GenerateRandomness(numberOfServers, cID)
@@ -507,6 +569,7 @@ func GenerateMessageArray(cycleMessage CycleMessage, cID int64, circ Circuit) (m
 		Keys:  append(mArr.Keys, k1),
 	}
 
+	cMutex.Unlock()
 	return
 }
 
@@ -857,57 +920,59 @@ func RandomSymmKeyGen() (key []byte) {
 
 //GenerateInputWiresValidate Given circuit and randomness generate the input wires corresponding to server n-1
 func GenerateInputWiresValidate(circ Circuit, rArr []Randomness, cID int64) (in [][]byte, out [][]byte) {
-
+	cMutex.Lock()
 	inputSize, outputSize := GetInputSizeOutputSize(circ)
 	in = YaoGarbledCkt_in(rArr[0].Rin, rArr[0].LblLength, inputSize)
 	out = YaoGarbledCkt_out(rArr[0].Rout, rArr[0].LblLength, outputSize)
 
-	for i := 1; i < len(rArr)-1; i++ {
+	for i := 1; i < len(rArr)-1; i++{
 		randIn := genRandomR(len(circ.InputGates), 1, rArr[i].Rin)
 		randOut := genRandomR(len(circ.OutputGates), 1, rArr[i].Rout)
 		in = reRandWires(randIn, in, true)
 		out = reRandWires(randOut, out, false)
 	}
+	cMutex.Unlock()
 	return
 }
 
-func reRandWires(Randoms []*big.Int, wires [][]byte, in bool) [][]byte {
-	for j := 0; j < len(Randoms); j++ {
-		R := Randoms[j]
-		if in {
-			newWire := new(big.Int).SetBytes(wires[j*4])
-			newWire = newWire.Mul(newWire, R)
-			newWire = newWire.Mod(newWire, fromHex(primeHex))
-			wires[j*4] = newWire.Bytes()
+func reRandWires(Randoms []*big.Int, wires [][]byte, in bool) ([][]byte){
+		for j:=0; j< len(Randoms); j++{
+			R := Randoms[j]
+			if(in){
+				newWire := new(big.Int).SetBytes(wires[j*4])
+				newWire = newWire.Mul(newWire, R)
+				newWire = newWire.Mod(newWire, fromHex(primeHex))
+				wires[j*4] = newWire.Bytes()
 
-			newWire = new(big.Int).SetBytes(wires[j*4+1])
-			newWire = newWire.Mul(newWire, R)
-			newWire = newWire.Mod(newWire, fromHex(primeHex))
-			wires[j*4+1] = newWire.Bytes()
+				newWire = new(big.Int).SetBytes(wires[j*4+1])
+				newWire = newWire.Mul(newWire, R)
+				newWire = newWire.Mod(newWire, fromHex(primeHex))
+				wires[j*4+1] = newWire.Bytes()
 
-			newWire = new(big.Int).SetBytes(wires[j*4+2])
-			newWire = newWire.Mul(newWire, R)
-			newWire = newWire.Mod(newWire, fromHex(primeHex))
-			wires[j*4+2] = newWire.Bytes()
+				newWire = new(big.Int).SetBytes(wires[j*4+2])
+				newWire = newWire.Mul(newWire, R)
+				newWire = newWire.Mod(newWire, fromHex(primeHex))
+				wires[j*4+2] = newWire.Bytes()
 
-			newWire = new(big.Int).SetBytes(wires[j*4+3])
-			newWire = newWire.Mul(newWire, R)
-			newWire = newWire.Mod(newWire, fromHex(primeHex))
-			wires[j*4+3] = newWire.Bytes()
-		} else {
-			newWire := new(big.Int).SetBytes(wires[j*2])
-			newWire = newWire.Mul(newWire, R)
-			newWire = newWire.Mod(newWire, fromHex(primeHex))
-			wires[j*2] = newWire.Bytes()
+				newWire = new(big.Int).SetBytes(wires[j*4+3])
+				newWire = newWire.Mul(newWire, R)
+				newWire = newWire.Mod(newWire, fromHex(primeHex))
+				wires[j*4+3] = newWire.Bytes()
+			} else {
+				newWire := new(big.Int).SetBytes(wires[j*2])
+				newWire = newWire.Mul(newWire, R)
+				newWire = newWire.Mod(newWire, fromHex(primeHex))
+				wires[j*2] = newWire.Bytes()
 
-			newWire = new(big.Int).SetBytes(wires[j*2+1])
-			newWire = newWire.Mul(newWire, R)
-			newWire = newWire.Mod(newWire, fromHex(primeHex))
-			wires[j*2+1] = newWire.Bytes()
+				newWire = new(big.Int).SetBytes(wires[j*2+1])
+				newWire = newWire.Mul(newWire, R)
+				newWire = newWire.Mod(newWire, fromHex(primeHex))
+				wires[j*2+1] = newWire.Bytes()
+			}
 		}
-	}
-	return wires
+		return wires
 }
+
 
 //GenerateRandomness generates randomness array corresponding to NumberOfServers with a certain computation ID
 func GenerateRandomness(numberOfServers int, cID int64) []Randomness {
@@ -986,6 +1051,8 @@ func GetFromServer(tokenChallenge Token, ip []byte, port int) (token Token, ok b
 
 //SendToDirectory Invokes the post method on the directory
 func SendToDirectory(k RegisterationMessage, ip []byte, port int) bool {
+	Decentralization = false
+
 	circuitJSON, err := json.Marshal(k)
 	req, err := http.NewRequest("POST", "http://"+string(ip)+":"+strconv.Itoa(port)+"/post", bytes.NewBuffer(circuitJSON))
 	if err != nil {
@@ -1282,7 +1349,7 @@ func Garble(circ CircuitMessage) GarbledMessage {
 
 	// Input Gates Garbling
 	var wInCnt int = 0
-	fmt.Println("Input Stuff")
+	//fmt.Println("Input Stuff")
 	for k, val := range circ.InputGates {
 		gc.InputGates = append(gc.InputGates, GarbledGate{
 			Gate: Gate{
@@ -1365,6 +1432,7 @@ func Garble(circ CircuitMessage) GarbledMessage {
 			}
 			outKey := outWires[string(val.GateID)][int(idxOut)]
 
+
 			//The encrypted value is now the X (private) part of the Gamal Key generated by the label.
 			//After this point the label is obsolete, however it is stored to generate the key of the next gate (Input wire multiplication).
 			outC1, outC2, err := elgamal.Encrypt(cryptoRand.Reader, &privOutput.PublicKey, false, outKey.WireLabel)
@@ -1381,7 +1449,7 @@ func Garble(circ CircuitMessage) GarbledMessage {
 
 	}
 
-	fmt.Println("Middle Stuff")
+	//fmt.Println("Middle Stuff")
 	//Middle Gates Garbling
 	for k, val := range circ.MiddleGates {
 
@@ -1474,7 +1542,7 @@ func Garble(circ CircuitMessage) GarbledMessage {
 
 	}
 
-	fmt.Println("Output Stuff")
+//	fmt.Println("Output Stuff")
 	//Output Gates Garbling
 
 	//A count for the output wires
@@ -1584,14 +1652,14 @@ func Garble(circ CircuitMessage) GarbledMessage {
 	return gm
 }
 
-func genRandomR(n int, factor int, seed int64) (rands []*big.Int) {
-	rands = make([]*big.Int, n*factor)
+func genRandomR(n int, factor int, seed int64)(rands []*big.Int){
+  rands = make([]*big.Int, n*factor)
 	rand.Seed(seed)
 	one := new(big.Int).SetInt64(1)
-	for i := 0; i < n*factor; i++ {
+	for i:=0; i<n*factor;i++{
 		R1 := new(big.Int).SetInt64(rand.Int63())
-		for one.Cmp(new(big.Int).GCD(new(big.Int), new(big.Int), R1, new(big.Int).Sub(fromHex(primeHex), one))) != 0 {
-			R1 = new(big.Int).SetInt64(rand.Int63())
+		for one.Cmp(new(big.Int).GCD(new(big.Int), new(big.Int), R1, new(big.Int).Sub(fromHex(primeHex), one))) != 0{
+			 R1 = new(big.Int).SetInt64(rand.Int63())
 
 		}
 		rands[i] = R1
@@ -1599,7 +1667,7 @@ func genRandomR(n int, factor int, seed int64) (rands []*big.Int) {
 	return
 }
 
-//ReRand does nothing for now
+//ReRand does things for a certain circuit view
 func ReRand(gcm GarbledMessage, r Randomness) GarbledMessage {
 	fmt.Println("In Rerand")
 	one := new(big.Int).SetInt64(1)
@@ -1608,14 +1676,15 @@ func ReRand(gcm GarbledMessage, r Randomness) GarbledMessage {
 	randOut := genRandomR(len(gcm.OutputGates), 1, r.Rout)
 	randGC := genRandomR(1, 1, r.Rgc)
 
-	fmt.Println("Input Stuff")
-	for i, val := range gcm.InputGates {
+	//fmt.Println("Input Stuff")
+	for i, val := range gcm.InputGates{
 		R1 := randIn[i]
 		R2 := randIn[i]
 		R := randGC[0]
-		for k := range val.GarbledValuesC1 {
-			c1 := new(big.Int).SetBytes(val.GarbledValuesC1[k])
-			c2 := new(big.Int).SetBytes(val.GarbledValuesC2[k])
+		//fmt.Println(i)
+ 		for k := range val.GarbledValuesC1{
+ 			c1 := new(big.Int).SetBytes(val.GarbledValuesC1[k])
+ 			c2 := new(big.Int).SetBytes(val.GarbledValuesC2[k])
 			y := new(big.Int).SetBytes(val.KeyY[k])
 			// R1 := randIn[4*i + k/2]
 			// R2 := randIn[4*i + (k%2 - 1) + 3]
@@ -1626,39 +1695,76 @@ func ReRand(gcm GarbledMessage, r Randomness) GarbledMessage {
 			newC1 := new(big.Int).Exp(c1, Rinverse, fromHex(primeHex))
 			newC2 := new(big.Int).Mul(c2, R)
 			newC2 = new(big.Int).Mod(newC2, fromHex(primeHex))
-			val.GarbledValuesC1[k] = newC1.Bytes()
-			val.GarbledValuesC2[k] = newC2.Bytes()
-			val.KeyY[k] = newY.Bytes()
-		}
-	}
-	fmt.Println("Middle Stuff")
-	for _, val := range gcm.MiddleGates {
-		R := randGC[0]
-		for k := range val.GarbledValuesC1 {
-			c1 := new(big.Int).SetBytes(val.GarbledValuesC1[k])
-			c2 := new(big.Int).SetBytes(val.GarbledValuesC2[k])
-			y := new(big.Int).SetBytes(val.KeyY[k])
-			//fmt.Println(R1)
-			//fmt.Println(R2)
-			Rsquared := new(big.Int).Mul(R, R)
-			Rsquared = new(big.Int).Mod(Rsquared, fromHex(primeHex))
-			Rinverse := new(big.Int).ModInverse(Rsquared, new(big.Int).Sub(fromHex(primeHex), one))
-			newY := new(big.Int).Exp(y, Rsquared, fromHex(primeHex))
-			newC1 := new(big.Int).Exp(c1, Rinverse, fromHex(primeHex))
-			newC2 := new(big.Int).Mul(c2, R)
+			key := elgamal.PublicKey{
+				G: fromHex(generatorHex),
+				P: fromHex(primeHex),
+				Y: newY,
+			}
+			hider1, hider2, _ := elgamal.Encrypt(cryptoRand.Reader, &key, false, one.Bytes())
+			newC1 = new(big.Int).Mul(newC1, hider1)
+			newC1 = new(big.Int).Mod(newC1, fromHex(primeHex))
+			newC2 = new(big.Int).Mul(newC2, hider2)
 			newC2 = new(big.Int).Mod(newC2, fromHex(primeHex))
 			val.GarbledValuesC1[k] = newC1.Bytes()
 			val.GarbledValuesC2[k] = newC2.Bytes()
 			val.KeyY[k] = newY.Bytes()
 		}
 	}
-	fmt.Println("Output Stuff")
-	for i, val := range gcm.OutputGates {
+	//fmt.Println("Middle Stuff")
+	// layerCounter := 0
+	// totalLayersVisited := len(gcm.InputGates)/2
+	// thisLayerLength := len(gcm.InputGates)/2
+	for _, val := range gcm.MiddleGates{
+		// if (i == totalLayersVisited){
+		// 	thisLayerLength /= 2
+		// 	totalLayersVisited += thisLayerLength
+		// 	layerCounter = 0
+		// }
+		R1 := randGC[0] // randGC[2*i]
+		R2 := randGC[0] // randGC[2*i+1]
+		R := randGC[0]  // randGC[len(gcm.InputGates) + i]
+		// fmt.Println(2*i)
+		// fmt.Println(2*i+1)
+		// fmt.Println(len(gcm.InputGates) + i)
 
-		R1 := randGC[0]
-		R2 := randGC[0]
+		for k := range val.GarbledValuesC1{
+			c1 := new(big.Int).SetBytes(val.GarbledValuesC1[k])
+			c2 := new(big.Int).SetBytes(val.GarbledValuesC2[k])
+			y := new(big.Int).SetBytes(val.KeyY[k])
+			//fmt.Println(R1)
+			//fmt.Println(R2)
+			Rsquared := new(big.Int).Mul(R1, R2)
+			Rsquared = new(big.Int).Mod(Rsquared, fromHex(primeHex))
+			Rinverse := new(big.Int).ModInverse(Rsquared, new(big.Int).Sub(fromHex(primeHex), one))
+			newY := new(big.Int).Exp(y, Rsquared, fromHex(primeHex))
+			newC1 := new(big.Int).Exp(c1, Rinverse, fromHex(primeHex))
+			newC2 := new(big.Int).Mul(c2, R)
+			newC2 = new(big.Int).Mod(newC2, fromHex(primeHex))
+			key := elgamal.PublicKey{
+				G: fromHex(generatorHex),
+				P: fromHex(primeHex),
+				Y: newY,
+			}
+			hider1, hider2, _ := elgamal.Encrypt(cryptoRand.Reader, &key, false, one.Bytes())
+			newC1 = new(big.Int).Mul(newC1, hider1)
+			newC1 = new(big.Int).Mod(newC1, fromHex(primeHex))
+			newC2 = new(big.Int).Mul(newC2, hider2)
+			newC2 = new(big.Int).Mod(newC2, fromHex(primeHex))
+			val.GarbledValuesC1[k] = newC1.Bytes()
+			val.GarbledValuesC2[k] = newC2.Bytes()
+			val.KeyY[k] = newY.Bytes()
+		}
+	}
+//	fmt.Println("Output Stuff")
+	for i, val := range gcm.OutputGates{
+
+		R1 := randGC[0]  // randGC[len(randGC)- 2*len(gcm.OutputGates)+2*i]
+		R2 := randGC[0]  // randGC[len(randGC)- 2*len(gcm.OutputGates)+2*i+1]
 		R := randOut[i]
-		for k := range val.GarbledValuesC1 {
+		// fmt.Println(len(randGC)- 2*len(gcm.OutputGates)+2*i)
+		// fmt.Println(len(randGC)- 2*len(gcm.OutputGates)+2*i+1)
+		// fmt.Println(i)
+		for k := range val.GarbledValuesC1{
 			c1 := new(big.Int).SetBytes(val.GarbledValuesC1[k])
 			c2 := new(big.Int).SetBytes(val.GarbledValuesC2[k])
 			y := new(big.Int).SetBytes(val.KeyY[k])
@@ -1668,6 +1774,16 @@ func ReRand(gcm GarbledMessage, r Randomness) GarbledMessage {
 			newY := new(big.Int).Exp(y, Rsquared, fromHex(primeHex))
 			newC1 := new(big.Int).Exp(c1, Rinverse, fromHex(primeHex))
 			newC2 := new(big.Int).Mul(c2, R)
+			newC2 = new(big.Int).Mod(newC2, fromHex(primeHex))
+			key := elgamal.PublicKey{
+				G: fromHex(generatorHex),
+				P: fromHex(primeHex),
+				Y: newY,
+			}
+			hider1, hider2, _ := elgamal.Encrypt(cryptoRand.Reader, &key, false, one.Bytes())
+			newC1 = new(big.Int).Mul(newC1, hider1)
+			newC1 = new(big.Int).Mod(newC1, fromHex(primeHex))
+			newC2 = new(big.Int).Mul(newC2, hider2)
 			newC2 = new(big.Int).Mod(newC2, fromHex(primeHex))
 			val.GarbledValuesC1[k] = newC1.Bytes()
 			val.GarbledValuesC2[k] = newC2.Bytes()
@@ -1688,7 +1804,7 @@ func Evaluate(gc GarbledMessage) (result ResEval) {
 	// Rk := new(big.Int).SetInt64(2669985732393126063)
 	// R := Rk.Bytes()
 	//Traversing Input Gates
-	fmt.Println("Input Stuff")
+	//fmt.Println("Input Stuff")
 	for _, val := range gc.InputGates {
 
 		//Calculating the number of input entries
@@ -1743,7 +1859,7 @@ func Evaluate(gc GarbledMessage) (result ResEval) {
 			fmt.Println("\n\nYaaay\nGate ", val.GateID, " Now has an output wire: \n", outWires[val.GateID].WireLabel, "\n\n")
 		}*/
 	}
-	fmt.Println("Middle Stuff")
+	//fmt.Println("Middle Stuff")
 	//Traversing middle gates
 	for _, val := range gc.MiddleGates {
 
@@ -1763,6 +1879,7 @@ func Evaluate(gc GarbledMessage) (result ResEval) {
 
 		//Generate Keys:
 		privOutput := GenerateElGamalKey(ByteSliceMul(firstInput, finalInput))
+
 
 		//A place holder for the output wires
 		outWires[string(val.GateID)] = Wire{}
@@ -1790,11 +1907,11 @@ func Evaluate(gc GarbledMessage) (result ResEval) {
 		if (bytes.Compare(outWires[string(val.GateID)].WireLabel, Wire{}.WireLabel)) == 0 {
 			fmt.Println("Fail Evaluation Middle Gate")
 		}
-		/*else {
+ /*else {
 			fmt.Println("\n\nYaaay\nGate ", val.GateID, " Now has an output wire: \n", outWires[val.GateID].WireLabel, "\n\n")
 		}*/
 	}
-	fmt.Println("Output Stuff")
+	//fmt.Println("Output Stuff")
 	//Traversing outputGates
 	for _, val := range gc.OutputGates {
 
@@ -1842,7 +1959,7 @@ func Evaluate(gc GarbledMessage) (result ResEval) {
 		if (bytes.Compare(outWires[string(val.GateID)].WireLabel, Wire{}.WireLabel)) == 0 {
 			fmt.Println("Fail Evaluation Output Gate")
 		}
-		/*else {
+ /*else {
 			fmt.Println("\n\nYaaay\nGate ", val.GateID, " Now has an output wire: \n", outWires[val.GateID].WireLabel, "\n\n")
 		}*/
 	}
@@ -1989,7 +2106,7 @@ func IPtoProperByte(ip net.IP) []byte {
 }
 
 //GetPartyInfo for a party to extract his own communication info
-func GetPartyInfo() (PartyInfo, []byte) {
+func GetPartyInfo(username string) (PartyInfo, []byte) {
 	port, err := GetFreePort()
 	if err != nil {
 		panic(err)
@@ -2006,6 +2123,7 @@ func GetPartyInfo() (PartyInfo, []byte) {
 		IP:        IPtoProperByte(ip),
 		Port:      port,
 		PublicKey: BytesFromRSAPublicKey(pk),
+		UserName:  []byte(username),
 	}
 	return pI, BytesFromRSAPrivateKey(sk)
 }
@@ -2039,6 +2157,45 @@ func GenerateElGamalKey(hexS []byte) *elgamal.PrivateKey {
 	return priv
 }
 
+//P is a false prime with a probability of 1/4^primeProb
+func requestElgamalParam(n int, primeProb int, randomG bool) (P *big.Int, G *big.Int) {
+	one := new(big.Int).SetInt64(1)
+	two := new(big.Int).SetInt64(2)
+
+	P = new(big.Int)
+	q := new(big.Int)
+	flag := false
+
+	// get p and q such that p is prime and q = (p-1)/2 is also prime
+	for (!flag){
+		P, _ = cryptoRand.Prime(cryptoRand.Reader, n)
+		q = new(big.Int).Sub(P, one)
+		q = new(big.Int).Div(q, two)
+
+		if (P.ProbablyPrime(primeProb) && q.ProbablyPrime(primeProb)){
+				flag = true
+		}
+	}
+
+	if (randomG){
+		PminusOne := new(big.Int).Sub(P, one)
+
+		h, _ := cryptoRand.Int(cryptoRand.Reader, PminusOne)
+		exponent := new(big.Int).Div(PminusOne, q)
+		G = new(big.Int).Exp(h, exponent, P)
+
+		// G must be > 1 because G shouldn't equal 1 and when compared with zero it returned true vkhbhtk
+		for (G.Cmp(one)!=1){
+			h, _ = cryptoRand.Int(cryptoRand.Reader, PminusOne)
+			exponent = new(big.Int).Div(PminusOne, q)
+			G = new(big.Int).Exp(h, exponent, P)
+		}
+	} else{
+		G = new(big.Int).SetInt64(2)
+	}
+	return
+}
+
 func byteSliceXOR(A []byte, B []byte) (C []byte) {
 	C = []byte{}
 	for key, val := range A {
@@ -2062,4 +2219,108 @@ func ByteSliceMul(A []byte, B []byte) (X []byte) {
 	C = C.Mod(C, fromHex(primeHex))
 	X = C.Bytes()
 	return
+}
+
+//SYS CALL PRINT FUNCTIONS
+func printCommand(cmd *exec.Cmd) {
+	fmt.Printf("==> Executing: %s\n", strings.Join(cmd.Args, " "))
+}
+
+func printError(err error) {
+	if err != nil {
+		os.Stderr.WriteString(fmt.Sprintf("==> Error: %s\n", err.Error()))
+	}
+}
+
+func printOutput(outs []byte) {
+	if len(outs) > 0 {
+		fmt.Printf("==> Output: %s\n", string(outs))
+	}
+}
+
+//UnlockWallet for a node to unlock its eosio wallet
+func UnlockWallet(url string, walletKey string) error {
+	cmd := exec.Command("cleos", "-u", url, "wallet", "unlock", "--password", walletKey)
+	printCommand(cmd)
+	output, err := cmd.CombinedOutput()
+	printOutput(output)
+	return err
+}
+
+//RegisterOnDecentralizedDS to register in the decentralized Directory of Service
+func RegisterOnDecentralizedDS(URL string, ActionAccount string, r RegisterationMessage) error {
+	Decentralization = true
+
+	cmd := exec.Command("cleos", "-u", URL, "push", "action", ActionAccount, "login", "[\""+string(r.Server.PartyInfo.UserName)+"\",\""+string(r.Type)+"\",\""+string(r.Server.PartyInfo.IP)+"\",\""+hex.EncodeToString(r.Server.PartyInfo.PublicKey)+"\",\""+strconv.Itoa(r.Server.ServerCapabilities.NumberOfGates)+"\",\""+strconv.Itoa(r.Server.PartyInfo.Port)+"\"]", "-p", string(r.Server.PartyInfo.UserName)+"@active", "-f")
+	printCommand(cmd)
+	output, err := cmd.CombinedOutput()
+	printOutput(output)
+	return err
+
+}
+
+//FetchCycleDecentralized fetches a cycle from the decentralized directory of service
+func FetchCycleDecentralized(URL string, ActionAccount string, c CycleRequestMessage) (bool, CycleMessage) {
+	cmd := exec.Command("cleos", "-u", URL, "--verbose", "push", "action", ActionAccount, "fetchcycle", "[\""+strconv.Itoa(c.FunctionInfo.NumberOfServers)+"\",\""+strconv.Itoa(c.FunctionInfo.ServerCapabilities.NumberOfGates)+"\"]", "-p", ActionAccount+"@active", "-f")
+	printCommand(cmd)
+	output, err := cmd.CombinedOutput()
+	printError(err)
+	printOutput(output)
+	return ConstructCycleStruct(output, c.FunctionInfo.NumberOfServers)
+}
+
+//ConstructCycleStruct construct the cycle returned from the transaction
+func ConstructCycleStruct(outs []byte, size int) (bool, CycleMessage) {
+	var cm CycleMessage
+	cm.Cycle.ServersCycle = make([]PartyInfo, size)
+	str := string(outs[:])
+	if strings.Contains(str, "fetch cycle success") {
+		scanner := bufio.NewScanner(strings.NewReader(str))
+		i := 0
+		for scanner.Scan() {
+			if strings.Contains(scanner.Text(), ">>") && !(strings.Contains(scanner.Text(), "fetch cycle success")) {
+				s := strings.Split(scanner.Text(), " ")
+				cm.Cycle.ServersCycle[i].IP = []byte(s[2])
+				cm.Cycle.ServersCycle[i].PublicKey, _ = hex.DecodeString(s[3])
+				cm.Cycle.ServersCycle[i].Port, _ = strconv.Atoi(s[4])
+				i++
+			}
+		}
+		return true, cm
+	}
+	return false, cm
+
+}
+
+//ServerRegisterDecentralized registers a client to the decentralized directory of service
+func ServerRegisterDecentralized(username string, cleosKey string, numberOfGates int, feePerGate float64) {
+
+	SetMyInfo(username, cleosKey)
+	regMsg := RegisterationMessage{
+		Type: []byte("Server"),
+		Server: ServerInfo{
+			PartyInfo: MyOwnInfo.PartyInfo,
+			ServerCapabilities: ServerCapabilities{
+				NumberOfGates: numberOfGates,
+				FeePerGate:    feePerGate,
+			},
+		},
+	}
+	err := UnlockWallet(DecentralizedDirectoryInfo.URL, DecentralizedDirectoryInfo.PasswordWallet)
+
+	CreateAccount(DecentralizedDirectoryInfo.URL, regMsg)
+	err = RegisterOnDecentralizedDS(DecentralizedDirectoryInfo.URL, DecentralizedDirectoryInfo.ActionAccount, regMsg)
+	if err != nil {
+		panic(err)
+	}
+
+}
+
+//CreateAccount to create a new account in the blockchain.
+func CreateAccount(URL string, r RegisterationMessage) {
+	cmd := exec.Command("cleos", "-u", URL, "create", "account", "eosio", string(r.Server.PartyInfo.UserName), "EOS6MRyAjQq8ud7hVNYcfnVPJqcVpscN5So8BhtHuGYqET5GDW5CV")
+	printCommand(cmd)
+	output, err := cmd.CombinedOutput()
+	printError(err)
+	printOutput(output)
 }

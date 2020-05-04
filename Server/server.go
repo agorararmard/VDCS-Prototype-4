@@ -49,7 +49,7 @@ func initServer() {
 	vdcs.SetDecentralizedDirectoryInfo("http://127.0.0.1:8888", actionAccount, passwordWallet)
 
 	//register now
-	vdcs.ServerRegisterDecentralized(username, cleosKey, 2000, 2)
+	vdcs.ServerRegisterDecentralized(username, cleosKey, 32000, 2)
 
 }
 

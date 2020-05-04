@@ -252,6 +252,9 @@ var ReadyMutex = sync.RWMutex{}
 //MyResult is a simulation for channels between the post handler and the eval function
 var MyResult ResEval
 
+// mutex for local com
+var cMutex = sync.RWMutex{}
+
 //SetMyInfo sets the info of the current node
 func SetMyInfo(username string, cleosKey string) {
 	pI, sk := GetPartyInfo(username)
@@ -431,6 +434,7 @@ func ClientHTTP() {
 
 //Comm basically, the channel will need to send the input/output mapping as well
 func Comm(cir string, cID int64, numberOfServers int, feePerGate float64, chVDCSCommCircRes chan<- ChannelContainer) {
+
 	file, _ := ioutil.ReadFile(cir + ".json")
 	localmCirc := localcircuit{}
 	err := json.Unmarshal([]byte(file), &localmCirc) //POSSIBLE BUG
@@ -463,7 +467,9 @@ func Comm(cir string, cID int64, numberOfServers int, feePerGate float64, chVDCS
 		}
 	}
 
+
 	msgArray, randNess, keys := GenerateMessageArray(cycleMessage, cID, mCirc)
+
 	//fmt.Println(cycleMessage)
 	//fmt.Println(keys) //store the keys somewhere for recovery or pass on channel
 
@@ -488,10 +494,12 @@ func Comm(cir string, cID int64, numberOfServers int, feePerGate float64, chVDCS
 	cc.PartyInfo = cycleMessage.ServersCycle[numberOfServers-1]
 	cc.Keys = keys
 	chVDCSCommCircRes <- cc
+
 }
 
 //GenerateMessageArray Takes a CycleMessage, a cID, and a circuit and creates a message array encrypted and returns it with the corresponding randomness for the user to use
 func GenerateMessageArray(cycleMessage CycleMessage, cID int64, circ Circuit) (mArr MessageArray, rArr []Randomness, keys [][]byte) {
+	cMutex.Lock()
 	numberOfServers := len(cycleMessage.ServersCycle)
 
 	rArr = GenerateRandomness(numberOfServers, cID)
@@ -561,6 +569,7 @@ func GenerateMessageArray(cycleMessage CycleMessage, cID int64, circ Circuit) (m
 		Keys:  append(mArr.Keys, k1),
 	}
 
+	cMutex.Unlock()
 	return
 }
 
@@ -911,7 +920,7 @@ func RandomSymmKeyGen() (key []byte) {
 
 //GenerateInputWiresValidate Given circuit and randomness generate the input wires corresponding to server n-1
 func GenerateInputWiresValidate(circ Circuit, rArr []Randomness, cID int64) (in [][]byte, out [][]byte) {
-
+	cMutex.Lock()
 	inputSize, outputSize := GetInputSizeOutputSize(circ)
 	in = YaoGarbledCkt_in(rArr[0].Rin, rArr[0].LblLength, inputSize)
 	out = YaoGarbledCkt_out(rArr[0].Rout, rArr[0].LblLength, outputSize)
@@ -922,6 +931,7 @@ func GenerateInputWiresValidate(circ Circuit, rArr []Randomness, cID int64) (in 
 		in = reRandWires(randIn, in, true)
 		out = reRandWires(randOut, out, false)
 	}
+	cMutex.Unlock()
 	return
 }
 
