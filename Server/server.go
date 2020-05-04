@@ -19,6 +19,8 @@ var in_pendingEval = make(map[string]vdcs.GarbledMessage)
 var pendingRepo = make(map[string]bool)
 
 var mutexE = sync.RWMutex{}
+var op = sync.RWMutex{}
+
 
 var wg = sync.WaitGroup{}
 
@@ -171,6 +173,7 @@ func postHandler(w http.ResponseWriter, r *http.Request) {
 //should work fine after gouhar fix the issue of naming
 
 func garbleLogic(arr vdcs.MessageArray) {
+	op.Lock()
 
 	//access the first message which is aleardy decrypted in the post handler
 	x := arr.Array[0]
@@ -251,9 +254,11 @@ func garbleLogic(arr vdcs.MessageArray) {
 	//fmt.Println("output wires length sent encrypted: ", len(arr.Array[len(arr.Array)-1].GarbledMessage.OutputWires))
 
 	vdcs.SendToServer(arr, x.NextServer.IP, x.NextServer.Port)
+	op.Unlock()
 }
 
 func rerandLogic(arr vdcs.MessageArray) {
+	op.Lock()
 	//fmt.Println("Message Array Size inside rerandLogic: ", len(arr.Array))
 	//fmt.Println("The message sent to me encrypted: ", arr.Array[len(arr.Array)-1])
 	//fmt.Println("input gates length sent encrypted: ", len(arr.Array[len(arr.Array)-1].GarbledMessage.InputGates))
@@ -385,10 +390,11 @@ func rerandLogic(arr vdcs.MessageArray) {
 
 	//send it to the next server.... (from the first message)
 	vdcs.SendToServer(arr, next.IP, next.Port)
+	op.Unlock()
 }
 
 func evalLogic(mess vdcs.Message, reqType string) {
-
+	op.Lock()
 	//the first one is already decrypted
 	gm := vdcs.GarbledMessage{
 
@@ -504,4 +510,5 @@ func evalLogic(mess vdcs.Message, reqType string) {
 		}
 		mutexE.Unlock()
 	}
+	op.Unlock()
 }
