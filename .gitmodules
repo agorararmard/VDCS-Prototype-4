@@ -1,0 +1,3 @@
+[submodule "Client/vdcs-preprocessor"]
+	path = Client/vdcs-preprocessor
+	url = https://github.com/ax3ghazy/vdcs-preprocessor
