@@ -7,3 +7,13 @@
     go run ComparatorGenerator.go n
     ```
  - n: number of bytes
+## Cloning
+
+The repo contains a submodule; use the following commands to clone it properly:
+
+    git clone --recursive https://github.com/agorararmard/VDCS-Prototype-4 
+    
+or
+    git clone https://github.com/agorararmard/VDCS-Prototype-4
+    cd VDCS-Prototype-4
+    git submodule update --init
