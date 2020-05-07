@@ -173,7 +173,6 @@ func postHandler(w http.ResponseWriter, r *http.Request) {
 //should work fine after gouhar fix the issue of naming
 
 func garbleLogic(arr vdcs.MessageArray) {
-	op.Lock()
 
 	//access the first message which is aleardy decrypted in the post handler
 	x := arr.Array[0]
@@ -197,7 +196,9 @@ func garbleLogic(arr vdcs.MessageArray) {
 	}
 
 	//garbling
+	op.Lock()
 	gm := vdcs.Garble(circM)
+	op.Unlock()
 
 	//the message to be sent
 	mess := vdcs.Message{
@@ -224,7 +225,9 @@ func garbleLogic(arr vdcs.MessageArray) {
 	}
 
 	//encrypting the message by generating a new key first then using it
+	op.Lock()
 	k := vdcs.RandomSymmKeyGen()
+	op.Unlock()
 	arr.Array[len(arr.Array)-1] = vdcs.EncryptMessageAES(k, arr.Array[len(arr.Array)-1])
 
 	//encreypting the key used in previous line
@@ -254,11 +257,9 @@ func garbleLogic(arr vdcs.MessageArray) {
 	//fmt.Println("output wires length sent encrypted: ", len(arr.Array[len(arr.Array)-1].GarbledMessage.OutputWires))
 
 	vdcs.SendToServer(arr, x.NextServer.IP, x.NextServer.Port)
-	op.Unlock()
 }
 
 func rerandLogic(arr vdcs.MessageArray) {
-	op.Lock()
 	//fmt.Println("Message Array Size inside rerandLogic: ", len(arr.Array))
 	//fmt.Println("The message sent to me encrypted: ", arr.Array[len(arr.Array)-1])
 	//fmt.Println("input gates length sent encrypted: ", len(arr.Array[len(arr.Array)-1].GarbledMessage.InputGates))
@@ -335,7 +336,9 @@ func rerandLogic(arr vdcs.MessageArray) {
 	//fmt.Println("output gates length sent before rerand: ", len(mess.GarbledMessage.OutputGates))
 
 	//reranding the garbled circuit
+	op.Lock()
 	ngcm := vdcs.ReRand(mess.GarbledMessage, mess.Randomness)
+	op.Unlock()
 	//newMessage to append
 	nMessage := vdcs.Message{
 		//from reRand
@@ -364,7 +367,9 @@ func rerandLogic(arr vdcs.MessageArray) {
 	}
 
 	//encrypting the message by generating a new key first then using it
+	op.Lock()
 	kn := vdcs.RandomSymmKeyGen()
+	op.Unlock()
 	arr.Array[len(arr.Array)-1] = vdcs.EncryptMessageAES(kn, arr.Array[len(arr.Array)-1])
 
 	//encreypting the key used in previous line using public key
@@ -390,11 +395,9 @@ func rerandLogic(arr vdcs.MessageArray) {
 
 	//send it to the next server.... (from the first message)
 	vdcs.SendToServer(arr, next.IP, next.Port)
-	op.Unlock()
 }
 
 func evalLogic(mess vdcs.Message, reqType string) {
-	op.Lock()
 	//the first one is already decrypted
 	gm := vdcs.GarbledMessage{
 
@@ -510,5 +513,4 @@ func evalLogic(mess vdcs.Message, reqType string) {
 		}
 		mutexE.Unlock()
 	}
-	op.Unlock()
 }
