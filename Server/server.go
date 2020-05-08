@@ -21,7 +21,6 @@ var pendingRepo = make(map[string]bool)
 var mutexE = sync.RWMutex{}
 var op = sync.RWMutex{}
 
-
 var wg = sync.WaitGroup{}
 
 func main() {
@@ -121,10 +120,12 @@ func handlePostRequest(x vdcs.MessageArray) {
 
 	if string(reqType) == "Garble" {
 		//the garbling thread
+		fmt.Println("Garbling ", x.Array[0].ComID.CID)
 		go garbleLogic(x)
 
 	} else if string(reqType) == "ReRand" {
 		//the rerand thread
+		fmt.Println("Rerandomizing ", x.Array[0].ComID.CID)
 		go rerandLogic(x)
 	} else if string(reqType) == "SEval" {
 		//the eval thread
@@ -143,8 +144,10 @@ func handlePostRequest(x vdcs.MessageArray) {
 		//fmt.Println("IP of the client before Handling logic: ", string(x.Array[0].NextServer.IP))
 		//fmt.Println("Public key of the client before Handling logic: ", x.Array[0].NextServer.PublicKey)
 		//fmt.Println("Length of the array: ", len(x.Array), "Length of the keys: ", len(x.Keys))
+		fmt.Println("Received Evaluate from Server, Request ", msg.ComID.CID)
 		go evalLogic(msg, string(reqType))
 	} else if string(reqType) == "CEval" {
+		fmt.Println("Received Evaluate from Client, Request ", x.Array[0].ComID.CID)
 		//the thread for the client requesting the result
 		go evalLogic(x.Array[0], string(reqType))
 	}
@@ -448,6 +451,7 @@ func evalLogic(mess vdcs.Message, reqType string) {
 			mutexE.Unlock()
 
 			//send them
+			fmt.Println("Evaluating ", gm.CID)
 			res := vdcs.Evaluate(evalGm)
 
 			//send to the client
@@ -483,6 +487,7 @@ func evalLogic(mess vdcs.Message, reqType string) {
 			mutexE.Unlock()
 
 			//send them
+			fmt.Println("Evaluating ", gm.CID)
 			res := vdcs.Evaluate(evalGm)
 
 			//send to the client

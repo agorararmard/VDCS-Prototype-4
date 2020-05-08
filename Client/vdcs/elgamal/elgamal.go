@@ -17,7 +17,6 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"errors"
-	"fmt"
 	"io"
 	"math/big"
 )
@@ -61,8 +60,8 @@ func Encrypt(random io.Reader, pub *PublicKey, pad bool, msg []byte) (c1, c2 *bi
 	}
 
 	k, err := rand.Int(random, pub.P)
-	fmt.Println("k")
-	fmt.Println(k)
+	//fmt.Println("k")
+	//fmt.Println(k)
 	if err != nil {
 		return
 	}
